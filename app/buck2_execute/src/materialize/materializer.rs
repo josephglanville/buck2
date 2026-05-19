@@ -142,6 +142,8 @@ pub struct DeclareArtifactPayload {
     pub artifact: ArtifactValue,
     /// For content-based artifacts, the configuration-based path used for eager materialization lookups.
     pub configuration_path: Option<ProjectRelativePathBuf>,
+    /// Logical absolute BuckPkgs store path associated with this staged artifact, if any.
+    pub logical_store_path: Option<String>,
 }
 
 /// A trait providing methods to asynchronously materialize artifacts.

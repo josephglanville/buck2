@@ -32,6 +32,7 @@ use buck2_directory::directory::directory_iterator::DirectoryIterator;
 use buck2_directory::directory::entry::DirectoryEntry;
 use buck2_error::internal_error;
 use buck2_execute::execute::request::OutputType;
+use buck2_fs::paths::abs_norm_path::AbsNormPathBuf;
 use buck2_fs::paths::forward_rel_path::ForwardRelativePath;
 use buck2_fs::paths::forward_rel_path::ForwardRelativePathBuf;
 use buck2_hash::BuckIndexSet;
@@ -187,6 +188,32 @@ impl<'v> ActionsRegistry<'v> {
         let declared = DeclaredArtifact::new(out_path, output_type, hidden, heap);
         if !self.artifacts.insert(declared.dupe()) {
             panic!("not expected duplicate artifact after output path was successfully claimed");
+        }
+        Ok(declared)
+    }
+
+    /// Declares a staged build output that carries a logical BuckPkgs store path.
+    /// Executors still operate on the staged project-relative path.
+    pub fn declare_store_artifact(
+        &mut self,
+        staged_path: ForwardRelativePathBuf,
+        logical_store_path: AbsNormPathBuf,
+        output_type: OutputType,
+        declaration_location: Option<FileSpan>,
+        heap: Heap<'v>,
+    ) -> buck2_error::Result<DeclaredArtifact<'v>> {
+        self.claim_output_path(&staged_path, declaration_location)?;
+        let out_path = BuildArtifactPath::with_store_path(
+            self.owner.dupe(),
+            staged_path,
+            BuckOutPathKind::Configuration,
+            logical_store_path.to_string(),
+        );
+        let declared = DeclaredArtifact::new(out_path, output_type, 0, heap);
+        if !self.artifacts.insert(declared.dupe()) {
+            panic!(
+                "not expected duplicate store artifact after output path was successfully claimed"
+            );
         }
         Ok(declared)
     }

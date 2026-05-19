@@ -340,6 +340,7 @@ impl<'v> CommandLineArgLike<'v> for StarlarkProjectRoot {
 #[derive(Debug, Clone)]
 pub struct CommandLineLocation<'a> {
     root: Option<&'a ProjectRoot>,
+    absolute_path: Option<String>,
     path: RelativePathBuf,
     path_separator: PathSeparatorKind,
 }
@@ -352,9 +353,18 @@ impl CommandLineLocation<'_> {
     pub fn into_string(self) -> String {
         let Self {
             root,
+            absolute_path,
             path,
             path_separator,
         } = self;
+
+        if let Some(path) = absolute_path {
+            return if path_separator == PathSeparatorKind::Windows {
+                path.replace('/', "\\")
+            } else {
+                path
+            };
+        }
 
         let mut root_buf;
         let res = match root {
@@ -401,6 +411,7 @@ impl<'a> CommandLineLocation<'a> {
     ) -> Self {
         Self {
             root: Some(root),
+            absolute_path: None,
             path: path.into(),
             path_separator,
         }
@@ -409,7 +420,17 @@ impl<'a> CommandLineLocation<'a> {
     pub fn from_relative_path(path: RelativePathBuf, path_separator: PathSeparatorKind) -> Self {
         Self {
             root: None,
+            absolute_path: None,
             path,
+            path_separator,
+        }
+    }
+
+    pub fn from_absolute_path(path: String, path_separator: PathSeparatorKind) -> Self {
+        Self {
+            root: None,
+            absolute_path: Some(path),
+            path: RelativePathBuf::empty(),
             path_separator,
         }
     }
@@ -429,6 +450,13 @@ pub trait CommandLineContext {
         artifact: &Artifact,
         artifact_path_mapping: &dyn ArtifactPathMapper,
     ) -> buck2_error::Result<CommandLineLocation<'_>> {
+        if let Some(store_path) = artifact.get_path().logical_store_path() {
+            return Ok(CommandLineLocation::from_absolute_path(
+                store_path,
+                self.fs().path_separator(),
+            ));
+        }
+
         self.resolve_project_path(
             artifact.resolve_path(self.fs().fs(), artifact_path_mapping.get(artifact))?,
         )

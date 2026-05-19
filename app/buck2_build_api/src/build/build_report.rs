@@ -26,6 +26,7 @@ use buck2_artifact::artifact::artifact_dump::DirectoryInfo;
 use buck2_artifact::artifact::artifact_dump::ExternalSymlinkInfo;
 use buck2_artifact::artifact::artifact_dump::FileInfo;
 use buck2_artifact::artifact::artifact_dump::SymlinkInfo;
+use buck2_artifact::artifact::artifact_type::Artifact;
 use buck2_cli_proto::CommonBuildOptions;
 use buck2_common::legacy_configs::dice::HasLegacyConfigs;
 use buck2_common::legacy_configs::key::BuckconfigKeyRef;
@@ -124,13 +125,13 @@ struct MaybeConfiguredBuildReportEntry {
     success: BuildOutcome,
     /// a map of each subtarget of the current target (outputted as a `|` delimited list) to
     /// the default exposed output of the subtarget
-    outputs: HashMap<Arc<str>, SmallSet<ProjectRelativePathBuf>>,
+    outputs: HashMap<Arc<str>, SmallSet<String>>,
     /// a map of each subtarget of the current target (outputted as a `|` delimited list) to
     /// the hidden, implicitly built outputs of the subtarget. There are multiple outputs
     /// per subtarget
     ///
     /// FIXME(JakobDegen): This should be in `ConfiguredBuildReportEntry`
-    other_outputs: HashMap<Arc<str>, SmallSet<ProjectRelativePathBuf>>,
+    other_outputs: HashMap<Arc<str>, SmallSet<String>>,
     /// The size of the graph for this target, if it was produced
     ///
     /// FIXME(JakobDegen): This should be in `ConfiguredBuildReportEntry`
@@ -768,11 +769,7 @@ impl<'a> BuildReportCollector<'a> {
                                 .outputs
                                 .entry(provider_name.dupe())
                                 .or_default()
-                                .insert({
-                                    artifact
-                                        .resolve_configuration_hash_path(self.artifact_fs)
-                                        .unwrap()
-                                });
+                                .insert(build_report_output_path(artifact, self.artifact_fs));
                         }
                     }
                 }
@@ -1057,6 +1054,15 @@ pub async fn build_report_opts<'a>(
     };
 
     Ok(build_report_opts)
+}
+
+fn build_report_output_path(artifact: &Artifact, artifact_fs: &ArtifactFs) -> String {
+    artifact.get_path().logical_store_path().unwrap_or_else(|| {
+        artifact
+            .resolve_configuration_hash_path(artifact_fs)
+            .unwrap()
+            .to_string()
+    })
 }
 
 fn write_or_serialize_build_report(

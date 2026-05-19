@@ -218,3 +218,88 @@ fn declare_output_require_bound() -> buck2_error::Result<()> {
         _ => panic!("Expected a specific failure containing `{expect}`, got {ret:?}"),
     })
 }
+
+#[test]
+fn declare_store_output_declares_staged_store_artifact() -> buck2_error::Result<()> {
+    let content = indoc!(
+        r#"
+         def test(c):
+             store_path = c.actions.store_path(
+                 store_path_key = "0123456789abcdef0123456789abcdef",
+                 store_name = "bash-5.3",
+             )
+             out = c.actions.declare_store_output(
+                 store_path = store_path,
+                 dir = True,
+             )
+             return (out.basename, out.short_path)
+         "#
+    );
+
+    run_ctx_test(content, |ret| {
+        let a = <(&str, &str)>::unpack_value(ret.unwrap()).unwrap().unwrap();
+        assert_eq!("0123456789abcdef0123456789abcdef-bash-5.3", a.0);
+        assert_eq!(
+            "__buckpkgs_store__/0123456789abcdef0123456789abcdef-bash-5.3",
+            a.1
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn declare_store_output_rejects_invalid_store_path_keys() -> buck2_error::Result<()> {
+    let content = indoc!(
+        r#"
+         def test(c):
+             return c.actions.store_path(
+                 store_path_key = "not-a-store-key",
+                 store_name = "bash-5.3",
+             )
+         "#
+    );
+
+    let expect = "store path key must be a 32-character lowercase hex digest prefix";
+    run_ctx_test(content, |ret| match ret {
+        Err(e) if e.to_string().contains(expect) => Ok(()),
+        _ => panic!("Expected a specific failure containing `{expect}`, got {ret:?}"),
+    })
+}
+
+#[test]
+fn declare_store_output_rejects_invalid_store_names() -> buck2_error::Result<()> {
+    let content = indoc!(
+        r#"
+         def test(c):
+             return c.actions.store_path(
+                 store_path_key = "0123456789abcdef0123456789abcdef",
+                 store_name = "nested/bash-5.3",
+             )
+         "#
+    );
+
+    let expect = "store name must be a non-empty single path entry";
+    run_ctx_test(content, |ret| match ret {
+        Err(e) if e.to_string().contains(expect) => Ok(()),
+        _ => panic!("Expected a specific failure containing `{expect}`, got {ret:?}"),
+    })
+}
+
+#[test]
+fn declare_store_output_requires_store_path_values() -> buck2_error::Result<()> {
+    let content = indoc!(
+        r#"
+         def test(c):
+             return c.actions.declare_store_output(
+                 store_path = "/pkgs/store/abc-bash-5.3",
+                 dir = True,
+             )
+         "#
+    );
+
+    let expect = "StorePath";
+    run_ctx_test(content, |ret| match ret {
+        Err(e) if e.to_string().contains(expect) => Ok(()),
+        _ => panic!("Expected a specific failure containing `{expect}`, got {ret:?}"),
+    })
+}

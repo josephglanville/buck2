@@ -13,6 +13,7 @@ use buck2_build_api::interpreter::rule_defs::artifact::starlark_declared_artifac
 use buck2_build_api::interpreter::rule_defs::artifact_tagging::ArtifactTag;
 use buck2_build_api::interpreter::rule_defs::context::AnalysisActions;
 use buck2_build_api::interpreter::rule_defs::digest_config::StarlarkDigestConfig;
+use buck2_build_api::interpreter::rule_defs::store_path::StarlarkStorePath;
 use buck2_build_api::interpreter::rule_defs::transitive_set::FrozenTransitiveSetDefinition;
 use buck2_build_api::interpreter::rule_defs::transitive_set::TransitiveSet;
 use buck2_core::fs::buck_out_path::BuckOutPathKind;
@@ -84,6 +85,49 @@ pub(crate) fn analysis_actions_methods_unsorted(builder: &mut MethodsBuilder) {
             output_type,
             eval.call_stack_top_location(),
             path_resolution_method,
+            eval.heap(),
+        )?;
+
+        Ok(StarlarkDeclaredArtifact::new(
+            eval.call_stack_top_location(),
+            artifact,
+            AssociatedArtifacts::new(),
+        ))
+    }
+
+    /// Declares a BuckPkgs store-backed output. The output still executes
+    /// through Buck2's normal staged artifact path; its logical absolute store
+    /// path is retained for store-aware consumers.
+    fn store_path(
+        this: &AnalysisActions,
+        #[starlark(require = named)] store_path_key: &str,
+        #[starlark(require = named)] store_name: &str,
+    ) -> starlark::Result<StarlarkStorePath> {
+        let _unused = this;
+        Ok(StarlarkStorePath::from_identity(
+            store_path_key,
+            store_name,
+        )?)
+    }
+
+    /// Declares a BuckPkgs store-backed output. The output still executes
+    /// through Buck2's normal staged artifact path; its logical absolute store
+    /// path is retained for store-aware consumers.
+    fn declare_store_output<'v>(
+        this: &AnalysisActions<'v>,
+        #[starlark(require = named)] store_path: ValueTyped<'v, StarlarkStorePath>,
+        #[starlark(require = named, default = false)] dir: bool,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<StarlarkDeclaredArtifact<'v>> {
+        let output_type = if dir {
+            OutputType::Directory
+        } else {
+            OutputType::FileOrDirectory
+        };
+        let artifact = this.state()?.declare_store_output(
+            store_path.path().clone(),
+            output_type,
+            eval.call_stack_top_location(),
             eval.heap(),
         )?;
 

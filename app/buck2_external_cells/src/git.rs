@@ -193,6 +193,7 @@ async fn download_impl(
             path: path.to_owned(),
             artifact: ArtifactValue::new(entry, None),
             configuration_path: None,
+            logical_store_path: None,
         }])
         .await?;
 

@@ -34,6 +34,7 @@ use crate::execute::kind::CommandExecutionKind;
 use crate::execute::output::CommandStdStreams;
 use crate::execute::request::CommandExecutionOutput;
 use crate::execute::request::ResolvedCommandExecutionOutput;
+use crate::execute::request::StoreInputClosureEntry;
 use crate::output_size::OutputSize;
 use crate::re::remote_action_result::ReMetadataTiming;
 
@@ -345,6 +346,10 @@ pub struct CommandExecutionReport {
     /// Any additional message that a command's executor wants to be user visible in case of a
     /// failure. Provided by non-Meta RE server.
     pub additional_message: Option<String>,
+    /// Declared `/pkgs/store/...` inputs and the staged paths backing them for this execution.
+    pub store_input_closure: Vec<StoreInputClosureEntry>,
+    /// Retained local scratch/work directory for a failed local action, when one exists.
+    pub failed_local_scratch_path: Option<String>,
     pub inline_environment_metadata: buck2_data::InlineCommandExecutionEnvironmentMetadata,
 }
 
@@ -432,6 +437,15 @@ impl CommandExecutionReport {
             signed_exit_code,
             metadata: Some(self.timing.to_proto()),
             additional_message: self.additional_message.clone(),
+            store_input_closure: self
+                .store_input_closure
+                .iter()
+                .map(|entry| buck2_data::StoreInputClosureEntry {
+                    logical_path: entry.logical_path.clone(),
+                    staged_path: entry.staged_path.to_string(),
+                })
+                .collect(),
+            failed_local_scratch_path: self.failed_local_scratch_path.clone(),
         }
     }
 }
@@ -507,6 +521,14 @@ mod tests {
             std_streams,
             exit_code: Some(456),
             additional_message: None,
+            store_input_closure: vec![StoreInputClosureEntry {
+                logical_path: "/pkgs/store/example-tool".to_owned(),
+                staged_path:
+                    buck2_core::fs::project_rel_path::ProjectRelativePathBuf::unchecked_new(
+                        "buck-out/v2/example-tool".to_owned(),
+                    ),
+            }],
+            failed_local_scratch_path: Some("/tmp/buck-scratch".to_owned()),
             inline_environment_metadata: buck2_data::InlineCommandExecutionEnvironmentMetadata {
                 sandcastle_instance_id: Some(123),
             },
@@ -579,6 +601,11 @@ mod tests {
             command_kind: Some(command_execution_kind),
             metadata: Some(command_execution_metadata),
             additional_message: None,
+            store_input_closure: vec![buck2_data::StoreInputClosureEntry {
+                logical_path: "/pkgs/store/example-tool".to_owned(),
+                staged_path: "buck-out/v2/example-tool".to_owned(),
+            }],
+            failed_local_scratch_path: Some("/tmp/buck-scratch".to_owned()),
         };
 
         buck2_data::CommandExecution {

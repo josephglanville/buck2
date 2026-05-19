@@ -14,6 +14,7 @@ use std::sync::Arc;
 use allocative::Allocative;
 use async_trait::async_trait;
 use buck2_common::file_ops::metadata::FileDigest;
+use buck2_common::file_ops::metadata::FileDigestConfig;
 use buck2_core::buck2_env;
 use buck2_core::fs::project::ProjectRoot;
 use buck2_core::fs::project_rel_path::ProjectRelativePathBuf;
@@ -24,15 +25,20 @@ use buck2_directory::directory::entry::DirectoryEntry;
 use buck2_directory::directory::walk::unordered_entry_walk;
 use buck2_error::BuckErrorContext;
 use buck2_error::ErrorTag;
+use buck2_error::buck2_error;
 use buck2_error::conversion::from_any_with_tag;
 use buck2_events::dispatch::EventDispatcher;
 use buck2_execute::artifact_value::ArtifactValue;
 use buck2_execute::digest::CasDigestFromReExt;
 use buck2_execute::digest::CasDigestToReExt;
 use buck2_execute::digest_config::DigestConfig;
+use buck2_execute::directory::ActionDirectoryBuilder;
 use buck2_execute::directory::ActionDirectoryEntry;
 use buck2_execute::directory::ActionDirectoryMember;
 use buck2_execute::directory::ActionSharedDirectory;
+use buck2_execute::directory::extract_artifact_value;
+use buck2_execute::directory::insert_entry;
+use buck2_execute::entry::build_entry_from_disk;
 use buck2_execute::execute::blocking::BlockingExecutor;
 use buck2_execute::execute::blocking::IoRequest;
 use buck2_execute::execute::clean_output_paths::cleanup_path;
@@ -78,6 +84,7 @@ use crate::materializers::deferred::WriteFile;
 use crate::materializers::deferred::artifact_tree::MaterializationMethodToProto;
 use crate::materializers::deferred::clean_stale::CleanInvalidatedPathRequest;
 use crate::materializers::immediate;
+use crate::materializers::io::MaterializeStoreOutput;
 use crate::materializers::io::MaterializeTreeStructure;
 use crate::materializers::io::materialize_files;
 
@@ -136,6 +143,13 @@ pub trait IoHandler: Sized + Sync + Send + 'static {
         event_dispatcher: EventDispatcher,
         cancellations: &CancellationContext,
     ) -> Result<(), MaterializeEntryError>;
+
+    async fn materialize_store_output(
+        self: &Arc<Self>,
+        staged_path: ProjectRelativePathBuf,
+        store_path: &str,
+        artifact: ArtifactValue,
+    ) -> buck2_error::Result<()>;
 
     fn create_ttl_refresh(
         self: &Arc<Self>,
@@ -448,6 +462,31 @@ impl IoHandler for DefaultIoHandler {
         Ok(())
     }
 
+    async fn materialize_store_output(
+        self: &Arc<Self>,
+        staged_path: ProjectRelativePathBuf,
+        store_path: &str,
+        artifact: ArtifactValue,
+    ) -> buck2_error::Result<()> {
+        let store_path = AbsNormPathBuf::try_from(store_path.to_owned())?;
+        if fs_util::try_exists(&store_path)? {
+            return self.verify_store_output(&store_path, &artifact).await;
+        }
+
+        self.io_executor
+            .execute_io(
+                Box::new(MaterializeStoreOutput {
+                    staged_path,
+                    store_path: store_path.clone(),
+                    entry: artifact.entry().dupe(),
+                }),
+                CancellationContext::never_cancelled(),
+            )
+            .await?;
+
+        self.verify_store_output(&store_path, &artifact).await
+    }
+
     fn create_ttl_refresh(
         self: &Arc<Self>,
         tree: &ArtifactTree,
@@ -475,6 +514,50 @@ impl IoHandler for DefaultIoHandler {
 
     fn digest_config(&self) -> DigestConfig {
         self.digest_config
+    }
+}
+
+impl DefaultIoHandler {
+    async fn verify_store_output(
+        &self,
+        store_path: &AbsNormPathBuf,
+        artifact: &ArtifactValue,
+    ) -> buck2_error::Result<()> {
+        let (entry, _) = build_entry_from_disk(
+            store_path.clone(),
+            FileDigestConfig::build(self.digest_config.cas_digest_config()),
+            self.io_executor.as_ref(),
+            self.fs.root(),
+        )
+        .await?;
+        let entry = entry.ok_or_else(|| {
+            buck2_error!(
+                ErrorTag::MaterializationError,
+                "Store output disappeared while verifying `{}`",
+                store_path.display()
+            )
+        })?;
+        let verification_path =
+            ProjectRelativePathBuf::unchecked_new("__buckpkgs_store_verify__".to_owned());
+        let mut builder = ActionDirectoryBuilder::empty();
+        insert_entry(&mut builder, verification_path.clone(), entry)?;
+        let existing = extract_artifact_value(&builder, &verification_path, self.digest_config)?
+            .ok_or_else(|| {
+                buck2_error!(
+                    ErrorTag::MaterializationError,
+                    "Unable to verify existing store output `{}`",
+                    store_path.display()
+                )
+            })?;
+        if existing.entry() != artifact.entry() {
+            return Err(buck2_error!(
+                ErrorTag::MaterializationError,
+                "Existing store output `{}` does not match the artifact Buck2 recorded",
+                store_path.display()
+            ));
+        }
+
+        Ok(())
     }
 }
 

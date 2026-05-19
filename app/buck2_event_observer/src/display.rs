@@ -758,6 +758,17 @@ impl ActionErrorDisplay<'_> {
             };
         }
 
+        if !command_failed.store_input_closure.is_empty() {
+            append!("Declared store inputs:");
+            for entry in &command_failed.store_input_closure {
+                append!("  {} <= {}", entry.logical_path, entry.staged_path);
+            }
+        }
+
+        if let Some(path) = &command_failed.failed_local_scratch_path {
+            append!("Retained failed action scratch directory: `{path}`");
+        }
+
         match output_format {
             ActionErrorOutputFormat::IncludeOutputStreams => {}
             ActionErrorOutputFormat::ExcludeOutputStreams => return s,
@@ -1186,5 +1197,32 @@ mod tests {
         let stream_contents = "test\r\n";
         let res = strip_trailing_newline(stream_contents);
         assert_eq!(res, "test");
+    }
+
+    #[test]
+    fn simple_action_error_includes_store_inputs_and_failed_scratch_path() {
+        let command = buck2_data::CommandExecutionDetails {
+            store_input_closure: vec![buck2_data::StoreInputClosureEntry {
+                logical_path: "/pkgs/store/example-tool".to_owned(),
+                staged_path: "buck-out/v2/example-tool".to_owned(),
+            }],
+            failed_local_scratch_path: Some("/tmp/buck-scratch".to_owned()),
+            ..Default::default()
+        };
+        let error = ActionErrorDisplay {
+            action_id: "root//pkg:target".to_owned(),
+            reason: "Local command returned non-zero exit code 1".to_owned(),
+            command: Some(&command),
+            error_diagnostics: None,
+        };
+
+        let output = error.simple_format_with_timestamps(
+            |line| line.to_owned(),
+            ActionErrorOutputFormat::ExcludeOutputStreams,
+        );
+
+        assert!(output.contains("Declared store inputs:"));
+        assert!(output.contains("  /pkgs/store/example-tool <= buck-out/v2/example-tool"));
+        assert!(output.contains("Retained failed action scratch directory: `/tmp/buck-scratch`"));
     }
 }

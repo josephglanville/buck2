@@ -41,6 +41,8 @@ pub(crate) fn emit_event_if_relevant(
             output,
             &options_regex,
             None,
+            &[],
+            None,
             None,
             None,
         )?;

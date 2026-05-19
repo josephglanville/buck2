@@ -148,6 +148,19 @@ impl ArtifactPath<'_> {
             Either::Right(_) => false,
         }
     }
+
+    pub fn logical_store_path(&self) -> Option<String> {
+        let base = match self.base_path.as_ref() {
+            Either::Left(build_artifact_path) => build_artifact_path.logical_store_path()?,
+            Either::Right(_) => return None,
+        };
+
+        if self.projected_path.is_empty() {
+            Some(base.to_owned())
+        } else {
+            Some(format!("{}/{}", base, self.projected_path.as_str()))
+        }
+    }
 }
 
 impl fmt::Display for ArtifactPath<'_> {
@@ -155,5 +168,39 @@ impl fmt::Display for ArtifactPath<'_> {
         // NOTE: This produces a representation we tend to use in Starlark for those, which isn't
         // really consistent with what we use when *not* in Starlark.
         self.with_short_path(|p| write!(fmt, "{p}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use buck2_core::deferred::key::DeferredHolderKey;
+    use buck2_core::fs::buck_out_path::BuckOutPathKind;
+    use buck2_fs::paths::forward_rel_path::ForwardRelativePath;
+    use buck2_fs::paths::forward_rel_path::ForwardRelativePathBuf;
+    use gazebo::cell::ARef;
+
+    use super::*;
+
+    #[test]
+    fn logical_store_path_preserves_projected_paths() -> buck2_error::Result<()> {
+        let build_path = BuildArtifactPath::with_store_path(
+            DeferredHolderKey::testing_new("cell//pkg:store_target"),
+            ForwardRelativePathBuf::try_from("__buckpkgs_store__/abc-bash".to_owned())?,
+            BuckOutPathKind::Configuration,
+            "/pkgs/store/abc-bash".to_owned(),
+        );
+        let projected = ForwardRelativePath::new("bin/bash")?;
+        let path = ArtifactPath {
+            base_path: Either::Left(ARef::new_ptr(&build_path)),
+            projected_path: projected,
+            hidden_components_count: 0,
+        };
+
+        assert_eq!(
+            path.logical_store_path(),
+            Some("/pkgs/store/abc-bash/bin/bash".to_owned())
+        );
+
+        Ok(())
     }
 }

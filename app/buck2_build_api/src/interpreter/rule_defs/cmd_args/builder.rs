@@ -142,16 +142,28 @@ impl CommandLineContext for AbsCommandLineContext<'_> {
 mod tests {
     use std::path::PathBuf;
 
+    use buck2_artifact::actions::key::ActionIndex;
+    use buck2_artifact::actions::key::ActionKey;
+    use buck2_artifact::artifact::build_artifact::BuildArtifact;
     use buck2_core::cells::CellResolver;
     use buck2_core::cells::cell_root_path::CellRootPathBuf;
     use buck2_core::cells::name::CellName;
+    use buck2_core::configuration::data::ConfigurationData;
+    use buck2_core::deferred::base_deferred_key::BaseDeferredKey;
+    use buck2_core::deferred::key::DeferredHolderKey;
     use buck2_core::execution_types::executor_config::PathSeparatorKind;
     use buck2_core::fs::artifact_path_resolver::ArtifactFs;
+    use buck2_core::fs::buck_out_path::BuckOutPathKind;
     use buck2_core::fs::buck_out_path::BuckOutPathResolver;
+    use buck2_core::fs::buck_out_path::BuildArtifactPath;
     use buck2_core::fs::project::ProjectRoot;
     use buck2_core::fs::project_rel_path::ProjectRelativePath;
+    use buck2_core::target::configured_target_label::ConfiguredTargetLabel;
+    use buck2_execute::execute::request::OutputType;
     use buck2_fs::paths::abs_norm_path::AbsNormPathBuf;
+    use buck2_fs::paths::forward_rel_path::ForwardRelativePathBuf;
     use buck2_hash::BuckHashMap;
+    use dupe::Dupe;
 
     use super::*;
     use crate::interpreter::rule_defs::cmd_args::format::CommandLineFormatter;
@@ -182,6 +194,46 @@ mod tests {
         ))?;
 
         assert_eq!(&["foo".to_owned()], cli.as_slice());
+        Ok(())
+    }
+
+    #[test]
+    fn store_inputs_render_logically_while_store_outputs_stay_staged() -> buck2_error::Result<()> {
+        let project_fs =
+            ProjectRoot::new(AbsNormPathBuf::try_from(std::env::current_dir().unwrap()).unwrap())
+                .unwrap();
+        let fs = ArtifactFs::new(
+            CellResolver::testing_with_name_and_path(
+                CellName::testing_new("cell"),
+                CellRootPathBuf::new(ProjectRelativePathBuf::unchecked_new("cell_path".into())),
+            ),
+            BuckOutPathResolver::new(ProjectRelativePathBuf::unchecked_new("buck_out".into())),
+            project_fs,
+        );
+        let executor_fs = ExecutorFs::new(&fs, PathSeparatorKind::Unix);
+        let ctx = DefaultCommandLineContext::new(&executor_fs);
+        let target =
+            ConfiguredTargetLabel::testing_parse("cell//pkg:foo", ConfigurationData::testing_new());
+        let owner = BaseDeferredKey::TargetLabel(target.dupe());
+        let artifact = Artifact::from(BuildArtifact::new(
+            BuildArtifactPath::with_store_path(
+                DeferredHolderKey::Base(owner.dupe()),
+                ForwardRelativePathBuf::try_from("__buckpkgs_store__/abc-bash".to_owned())?,
+                BuckOutPathKind::Configuration,
+                "/pkgs/store/abc-bash".to_owned(),
+            ),
+            ActionKey::new(DeferredHolderKey::Base(owner), ActionIndex::new(0)),
+            OutputType::Directory,
+        )?);
+
+        let input = ctx
+            .resolve_artifact(&artifact, &BuckHashMap::default())?
+            .into_string();
+        let output = ctx.resolve_output_artifact(&artifact)?.into_string();
+
+        assert_eq!(input, "/pkgs/store/abc-bash");
+        assert_ne!(output, "/pkgs/store/abc-bash");
+        assert!(output.contains("__buckpkgs_store__/abc-bash"));
         Ok(())
     }
 
@@ -218,6 +270,22 @@ mod tests {
             CommandLineLocation::from_relative_path(RelativePathBuf::from("a/b"), windows_path_sep)
                 .into_string(),
             "a\\b"
+        );
+        assert_eq!(
+            CommandLineLocation::from_absolute_path(
+                "/pkgs/store/abc-bash/bin/bash".to_owned(),
+                unix_path_sep,
+            )
+            .into_string(),
+            "/pkgs/store/abc-bash/bin/bash"
+        );
+        assert_eq!(
+            CommandLineLocation::from_absolute_path(
+                "/pkgs/store/abc-bash/bin/bash".to_owned(),
+                windows_path_sep,
+            )
+            .into_string(),
+            "\\pkgs\\store\\abc-bash\\bin\\bash"
         );
     }
 

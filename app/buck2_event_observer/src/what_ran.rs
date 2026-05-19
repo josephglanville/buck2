@@ -100,6 +100,8 @@ pub struct WhatRanOutputCommand<'a> {
     pub repro: CommandReproducer,
     pub extra: Option<WhatRanOutputCommandExtra<'a>>,
     pub std_err: Option<&'a str>,
+    pub store_input_closure: &'a [buck2_data::StoreInputClosureEntry],
+    pub failed_local_scratch_path: Option<&'a str>,
     pub duration: Option<std::time::Duration>,
     pub scheduling_mode: Option<SchedulingMode>,
 }
@@ -158,6 +160,8 @@ pub fn emit_what_ran_entry(
     output: &mut impl WhatRanOutputWriter,
     options: &WhatRanOptionsRegex,
     std_err: Option<&str>,
+    store_input_closure: &[buck2_data::StoreInputClosureEntry],
+    failed_local_scratch_path: Option<&str>,
     duration: Option<std::time::Duration>,
     scheduling_mode: Option<SchedulingMode>,
 ) -> buck2_error::Result<()> {
@@ -213,6 +217,8 @@ pub fn emit_what_ran_entry(
         repro,
         extra,
         std_err,
+        store_input_closure,
+        failed_local_scratch_path,
         duration,
         scheduling_mode,
     })?;

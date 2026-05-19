@@ -227,6 +227,7 @@ impl<T> std::fmt::Debug for MaterializerCommand<T> {
                     path,
                     artifact,
                     configuration_path: _,
+                    logical_store_path: _,
                 },
                 method,
                 _dispatcher,
@@ -630,6 +631,7 @@ impl<T: IoHandler> DeferredMaterializerCommandProcessor<T> {
                     path,
                     artifact,
                     configuration_path: _,
+                    logical_store_path: _,
                 } in artifacts
                 {
                     self.declare_existing(&path, artifact);
@@ -641,6 +643,7 @@ impl<T: IoHandler> DeferredMaterializerCommandProcessor<T> {
                     path,
                     artifact: value,
                     configuration_path,
+                    logical_store_path: _,
                 },
                 method,
                 event_dispatcher,

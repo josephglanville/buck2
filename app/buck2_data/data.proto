@@ -1632,6 +1632,13 @@ message CommandExecutionDetails {
   CommandExecutionKind command_kind = 5;
   CommandExecutionMetadata metadata = 13;
   optional string additional_message = 14;
+  repeated StoreInputClosureEntry store_input_closure = 15;
+  optional string failed_local_scratch_path = 16;
+}
+
+message StoreInputClosureEntry {
+  string logical_path = 1;
+  string staged_path = 2;
 }
 
 message CommandExecutionKind {

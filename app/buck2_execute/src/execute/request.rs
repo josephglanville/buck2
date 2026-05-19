@@ -94,6 +94,12 @@ pub enum CommandExecutionInput {
     ),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StoreInputClosureEntry {
+    pub logical_path: String,
+    pub staged_path: ProjectRelativePathBuf,
+}
+
 #[derive(PartialEq, Eq, Debug, Copy, Clone, Dupe, Hash)]
 pub enum OutputCreationBehavior {
     Create,
@@ -213,6 +219,7 @@ pub struct CommandExecutionPaths {
 
     input_directory: ActionImmutableDirectory,
     output_paths: Vec<(ProjectRelativePathBuf, OutputType)>,
+    store_input_closure: Vec<StoreInputClosureEntry>,
 
     /// Total size of input files.
     input_files_bytes: u64,
@@ -227,6 +234,7 @@ impl CommandExecutionPaths {
         interner: Option<&DashMapDirectoryInterner<ActionDirectoryMember, TrackedFileDigest>>,
     ) -> buck2_error::Result<Self> {
         let mut builder = inputs_directory(&inputs, digest_config, fs)?;
+        let store_input_closure = Self::collect_store_input_closure(&inputs, fs)?;
 
         // RE spec requires outputs to be sorted:
         // https://github.com/bazelbuild/remote-apis/blob/1f36c310b28d762b258ea577ed08e8203274efae/build/bazel/remote/execution/v2/remote_execution.proto#L667-L669
@@ -274,8 +282,42 @@ impl CommandExecutionPaths {
             outputs,
             input_directory,
             output_paths,
+            store_input_closure,
             input_files_bytes,
         })
+    }
+
+    fn collect_store_input_closure(
+        inputs: &[CommandExecutionInput],
+        fs: &ArtifactFs,
+    ) -> buck2_error::Result<Vec<StoreInputClosureEntry>> {
+        let mut closure = Vec::new();
+
+        for input in inputs {
+            let CommandExecutionInput::Artifact(group) = input else {
+                continue;
+            };
+
+            for (artifact, value) in group.iter() {
+                let Some(logical_path) = artifact.logical_store_path() else {
+                    continue;
+                };
+
+                let content_hash = artifact
+                    .has_content_based_path()
+                    .then(|| value.content_based_path_hash());
+                let staged_path = artifact.resolve_path(fs, content_hash.as_ref())?;
+
+                closure.push(StoreInputClosureEntry {
+                    logical_path,
+                    staged_path,
+                });
+            }
+        }
+
+        closure.sort();
+        closure.dedup();
+        Ok(closure)
     }
 
     fn calculate_inputs_size_bytes(input_directory: &ActionImmutableDirectory) -> u64 {
@@ -302,6 +344,7 @@ impl CommandExecutionPaths {
             outputs,
             input_directory: _,
             output_paths: _,
+            store_input_closure: _,
             input_files_bytes: _,
         } = self;
         inputs.extend(output_paths);
@@ -318,6 +361,10 @@ impl CommandExecutionPaths {
 
     pub fn input_files_bytes(&self) -> u64 {
         self.input_files_bytes
+    }
+
+    pub fn store_input_closure(&self) -> &[StoreInputClosureEntry] {
+        &self.store_input_closure
     }
 }
 

@@ -346,6 +346,7 @@ impl Action for DownloadFileAction {
                             path: rel_path,
                             artifact: ArtifactValue::file(metadata.dupe()),
                             configuration_path: None,
+                            logical_store_path: None,
                         }])
                         .await?;
 

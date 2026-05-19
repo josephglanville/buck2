@@ -324,6 +324,18 @@ impl<T: IoHandler + Allocative> Materializer for DeferredMaterializerAccessor<T>
         &self,
         artifacts: Vec<DeclareArtifactPayload>,
     ) -> buck2_error::Result<()> {
+        for artifact in &artifacts {
+            if let Some(store_path) = artifact.logical_store_path.as_deref() {
+                self.io
+                    .materialize_store_output(
+                        artifact.path.clone(),
+                        store_path,
+                        artifact.artifact.dupe(),
+                    )
+                    .await?;
+            }
+        }
+
         let cmd = MaterializerCommand::DeclareExisting(
             artifacts,
             current_span(),
@@ -367,6 +379,7 @@ impl<T: IoHandler + Allocative> Materializer for DeferredMaterializerAccessor<T>
                 path,
                 artifact: value,
                 configuration_path,
+                logical_store_path: None,
             },
             Box::new(ArtifactMaterializationMethod::LocalCopy(srcs_tree, srcs)),
             get_dispatcher(),
@@ -404,6 +417,7 @@ impl<T: IoHandler + Allocative> Materializer for DeferredMaterializerAccessor<T>
                 path,
                 artifact: ArtifactValue::file(info.metadata.dupe()),
                 configuration_path,
+                logical_store_path: None,
             },
             Box::new(ArtifactMaterializationMethod::HttpDownload { info }),
             get_dispatcher(),
@@ -471,6 +485,7 @@ impl<T: IoHandler + Allocative> Materializer for DeferredMaterializerAccessor<T>
                     path,
                     artifact: value.dupe(),
                     configuration_path: cfg_path,
+                    logical_store_path: None,
                 },
                 Box::new(method),
                 get_dispatcher(),
