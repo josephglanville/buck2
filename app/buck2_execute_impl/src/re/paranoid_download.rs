@@ -88,6 +88,7 @@ impl ParanoidDownloader {
                      path,
                      artifact: value,
                      configuration_path: _,
+                     logical_store_path: _,
                  }| {
                     let path = inner.cache_path.join(path);
                     paths_to_clean.push(path.clone());

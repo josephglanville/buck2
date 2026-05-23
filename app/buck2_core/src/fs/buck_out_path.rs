@@ -75,6 +75,8 @@ struct BuildArtifactPathData {
     path: Box<ForwardRelativePath>,
     /// How the path is resolved
     path_resolution_method: BuckOutPathKind,
+    /// Logical BuckPkgs store path carried by a staged store output.
+    logical_store_path: Option<String>,
 }
 
 /// Represents a resolvable path corresponding to outputs of rules that are part
@@ -120,6 +122,21 @@ impl BuildArtifactPath {
             owner,
             path: path.into_box(),
             path_resolution_method,
+            logical_store_path: None,
+        }))
+    }
+
+    pub fn with_store_path(
+        owner: DeferredHolderKey,
+        path: ForwardRelativePathBuf,
+        path_resolution_method: BuckOutPathKind,
+        logical_store_path: String,
+    ) -> Self {
+        BuildArtifactPath(Arc::new(BuildArtifactPathData {
+            owner,
+            path: path.into_box(),
+            path_resolution_method,
+            logical_store_path: Some(logical_store_path),
         }))
     }
 
@@ -145,6 +162,14 @@ impl BuildArtifactPath {
 
     pub fn is_configuration_based_path(&self) -> bool {
         self.0.path_resolution_method == BuckOutPathKind::Configuration
+    }
+
+    pub fn logical_store_path(&self) -> Option<&str> {
+        self.0.logical_store_path.as_deref()
+    }
+
+    pub fn is_store_output(&self) -> bool {
+        self.logical_store_path().is_some()
     }
 }
 

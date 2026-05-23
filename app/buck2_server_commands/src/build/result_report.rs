@@ -187,7 +187,7 @@ impl<'a> ResultReporter<'a> {
         let mut outputs: Vec<proto::BuildOutput> = Vec::new();
         for (a, providers) in artifacts.into_iter() {
             let output = proto::BuildOutput {
-                path: a.resolve_configuration_hash_path(artifact_fs)?.to_string(),
+                path: output_display_path(a, artifact_fs)?,
                 providers: Some(providers),
             };
             outputs.push(output);
@@ -282,6 +282,19 @@ impl<'a> ResultReporter<'a> {
             }),
         }
         Ok(())
+    }
+}
+
+fn output_display_path(
+    artifact: &Artifact,
+    artifact_fs: &ArtifactFs,
+) -> buck2_error::Result<String> {
+    if let Some(store_path) = artifact.get_path().logical_store_path() {
+        Ok(store_path)
+    } else {
+        Ok(artifact
+            .resolve_configuration_hash_path(artifact_fs)?
+            .to_string())
     }
 }
 

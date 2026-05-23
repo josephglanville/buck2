@@ -178,7 +178,7 @@ async fn download_impl(
     let abs_path = proj_root.join(path);
     let digest_config = ctx.global_data().get_digest_config();
     let file_digest_config = FileDigestConfig::build(digest_config.cas_digest_config());
-    let entry = build_entry_from_disk(abs_path, file_digest_config, &*io, proj_root)
+    let entry = build_entry_from_disk(abs_path, file_digest_config, &*io, proj_root, true)
         .await?
         .0
         .ok_or(GitError::NoDirectory)?;
@@ -193,6 +193,7 @@ async fn download_impl(
             path: path.to_owned(),
             artifact: ArtifactValue::new(entry, None),
             configuration_path: None,
+            logical_store_path: None,
         }])
         .await?;
 

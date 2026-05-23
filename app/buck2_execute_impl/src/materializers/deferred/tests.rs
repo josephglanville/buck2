@@ -103,6 +103,7 @@ mod state_machine {
 
     use assert_matches::assert_matches;
     use buck2_common::file_ops::metadata::Symlink;
+    use buck2_core::execution_types::executor_config::RemoteExecutorUseCase;
     use buck2_core::fs::project::ProjectRootTemp;
     use buck2_error::BuckErrorContext;
     use buck2_error::buck2_error;
@@ -142,6 +143,7 @@ mod state_machine {
     #[derive(Allocative)]
     struct StubIoHandler {
         log: Mutex<Vec<(Op, ProjectRelativePathBuf)>>,
+        store_materializations: Mutex<Vec<(ProjectRelativePathBuf, String)>>,
         fail: Mutex<bool>,
         fail_paths: Mutex<Vec<ProjectRelativePathBuf>>,
         // If set, add a sleep when materializing to simulate a long materialization period
@@ -172,6 +174,10 @@ mod state_machine {
             std::mem::take(&mut *self.log.lock())
         }
 
+        fn take_store_materializations(&self) -> Vec<(ProjectRelativePathBuf, String)> {
+            std::mem::take(&mut *self.store_materializations.lock())
+        }
+
         fn set_fail(&self, fail: bool) {
             *self.fail.lock() = fail;
         }
@@ -183,6 +189,7 @@ mod state_machine {
         pub fn new(fs: ProjectRoot) -> Self {
             Self {
                 log: Default::default(),
+                store_materializations: Default::default(),
                 fail: Default::default(),
                 fail_paths: Default::default(),
                 materialization_config: StdBuckHashMap::default(),
@@ -320,6 +327,19 @@ mod state_machine {
                 self.log.lock().push((Op::Materialize, path));
                 Ok(())
             }
+        }
+
+        async fn materialize_store_output(
+            self: &Arc<Self>,
+            staged_path: ProjectRelativePathBuf,
+            store_path: &str,
+            _artifact: ArtifactValue,
+            _seal_cas_transport: bool,
+        ) -> buck2_error::Result<()> {
+            self.store_materializations
+                .lock()
+                .push((staged_path, store_path.to_owned()));
+            Ok(())
         }
 
         fn create_ttl_refresh(
@@ -581,6 +601,92 @@ mod state_machine {
                 .await;
             assert_eq!(dm.io.take_log(), &[(Op::Materialize, path2.clone())]);
 
+            Ok(())
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn declare_existing_realizes_store_outputs() -> buck2_error::Result<()> {
+        ignore_stack_overflow_checks_for_future(async {
+            let io = Arc::new(StubIoHandler::new(temp_root()));
+            let (dm, _handle, _events) = make_materializer(io.dupe(), None).await;
+            let staged_path = make_path("buck-out/v2/store/pkg");
+            let artifact = ArtifactValue::file(io.digest_config().empty_file());
+
+            dm.declare_existing(vec![DeclareArtifactPayload {
+                path: staged_path.clone(),
+                artifact,
+                configuration_path: None,
+                logical_store_path: Some("/pkgs/store/example-package".to_owned()),
+            }])
+            .await?;
+
+            assert_eq!(
+                io.take_store_materializations(),
+                vec![(staged_path, "/pkgs/store/example-package".to_owned())]
+            );
+
+            dm.abort();
+            Ok(())
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn declare_imported_store_does_not_republish_existing_store_outputs()
+    -> buck2_error::Result<()> {
+        ignore_stack_overflow_checks_for_future(async {
+            let io = Arc::new(StubIoHandler::new(temp_root()));
+            let (dm, _handle, _events) = make_materializer(io.dupe(), None).await;
+            let staged_path = make_path("buck-out/v2/store/imported-pkg");
+            let artifact = ArtifactValue::file(io.digest_config().empty_file());
+
+            dm.declare_imported_store(DeclareArtifactPayload {
+                path: staged_path,
+                artifact,
+                configuration_path: None,
+                logical_store_path: Some("/pkgs/store/imported-package".to_owned()),
+            })
+            .await?;
+
+            assert_eq!(io.take_store_materializations(), Vec::new());
+
+            dm.abort();
+            Ok(())
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn declare_cas_realizes_store_outputs() -> buck2_error::Result<()> {
+        ignore_stack_overflow_checks_for_future(async {
+            let io = Arc::new(StubIoHandler::new(temp_root()));
+            let (dm, _handle, _events) = make_materializer(io.dupe(), None).await;
+            let staged_path = make_path("buck-out/v2/store/pkg");
+            let artifact = ArtifactValue::file(io.digest_config().empty_file());
+            let materializer: &dyn Materializer = &dm;
+
+            materializer
+                .declare_cas_many(
+                    Arc::new(CasDownloadInfo::new_declared(
+                        RemoteExecutorUseCase::buck2_default(),
+                    )),
+                    vec![DeclareArtifactPayload {
+                        path: staged_path.clone(),
+                        artifact,
+                        configuration_path: None,
+                        logical_store_path: Some("/pkgs/store/example-package".to_owned()),
+                    }],
+                )
+                .await?;
+
+            assert_eq!(
+                io.take_store_materializations(),
+                vec![(staged_path, "/pkgs/store/example-package".to_owned())]
+            );
+
+            dm.abort();
             Ok(())
         })
         .await
@@ -1505,6 +1611,7 @@ mod state_machine {
                 path: path.clone(),
                 artifact: value,
                 configuration_path,
+                logical_store_path: None,
             },
             Box::new(ArtifactMaterializationMethod::Test),
             EventDispatcher::null(),

@@ -66,10 +66,12 @@ impl HashingInfo {
 // removal later by operations like "prepare output directory" or "clean" or
 // "clean stale".
 //
-// We also normalize file permissions, so that local action outputs have the
-// same permissions they would as if the action had run remotely, and we'd
-// downloaded the result from CAS. Note that `std::fs:remove*` _can_ remove
-// non-writable files. It's the directories that matter for the cleanup operations.
+// We also normalize file permissions, so that normal local action outputs have
+// the same permissions they would as if the action had run remotely, and we'd
+// downloaded the result from CAS. Store outputs opt out because their producer
+// seals the tree before publication; cleanup handles those directories only if
+// they are later removed. Note that `std::fs:remove*` _can_ remove non-writable
+// files. It's the directories that matter for the cleanup operations.
 fn do_normalize_permissions(path: &AbsNormPathBuf) -> buck2_error::Result<()> {
     // While the path ould have been populated by an action, we only get here if
     // we've walked the output tree and know the path exists already. Hence we
@@ -107,6 +109,7 @@ pub async fn build_entry_from_disk(
     digest_config: FileDigestConfig,
     blocking_executor: &dyn BlockingExecutor,
     project_root: &AbsNormPath,
+    normalize_permissions: bool,
 ) -> buck2_error::Result<(
     Option<ActionDirectoryEntry<ActionDirectoryBuilder>>,
     HashingInfo,
@@ -153,14 +156,20 @@ pub async fn build_entry_from_disk(
     let value = match FileType::from(m.file_type()) {
         FileType::File => {
             let (file_metadata, file_hashing_info): (FileMetadata, HashingInfo) =
-                build_file_metadata(path, digest_config).await?;
+                build_file_metadata(path, digest_config, normalize_permissions).await?;
             hashing_info = hashing_info.add(file_hashing_info);
             DirectoryEntry::Leaf(ActionDirectoryMember::File(file_metadata))
         }
         FileType::Symlink => DirectoryEntry::Leaf(create_symlink(&path, project_root)?),
         FileType::Directory => {
-            let (dir, dir_hashing_info) =
-                build_dir_from_disk(path, digest_config, blocking_executor, project_root).await?;
+            let (dir, dir_hashing_info) = build_dir_from_disk(
+                path,
+                digest_config,
+                blocking_executor,
+                project_root,
+                normalize_permissions,
+            )
+            .await?;
             hashing_info = hashing_info.add(dir_hashing_info);
             DirectoryEntry::Dir(dir)
         }
@@ -182,6 +191,7 @@ async fn build_dir_from_disk(
     digest_config: FileDigestConfig,
     blocking_executor: &dyn BlockingExecutor,
     project_root: &AbsNormPath,
+    normalize_permissions: bool,
 ) -> buck2_error::Result<(ActionDirectoryBuilder, HashingInfo)> {
     let mut builder = ActionDirectoryBuilder::empty();
     let mut hashing_info = HashingInfo::default();
@@ -193,7 +203,9 @@ async fn build_dir_from_disk(
 
     let files = blocking_executor
         .execute_io_inline(|| {
-            do_normalize_permissions(&disk_path)?;
+            if normalize_permissions {
+                do_normalize_permissions(&disk_path)?;
+            }
             fs_util::read_dir(&disk_path)
                 .categorize_internal()
                 .map_err(Into::into)
@@ -217,7 +229,8 @@ async fn build_dir_from_disk(
 
         match FileType::from(filetype) {
             FileType::File => {
-                let file_future = build_file_metadata(child_disk_path, digest_config);
+                let file_future =
+                    build_file_metadata(child_disk_path, digest_config, normalize_permissions);
                 file_names.push(filename);
                 file_futures.push(file_future)
             }
@@ -233,6 +246,7 @@ async fn build_dir_from_disk(
                     digest_config,
                     blocking_executor,
                     project_root,
+                    normalize_permissions,
                 );
                 directory_names.push(filename);
                 directory_futures.push(dir_future);
@@ -265,10 +279,13 @@ async fn build_dir_from_disk(
 fn build_file_metadata(
     disk_path: AbsNormPathBuf,
     digest_config: FileDigestConfig,
+    normalize_permissions: bool,
 ) -> impl Future<Output = buck2_error::Result<(FileMetadata, HashingInfo)>> {
     static SEMAPHORE: Lazy<Semaphore> = Lazy::new(|| Semaphore::new(100));
     let io_task = move || {
-        do_normalize_permissions(&disk_path)?;
+        if normalize_permissions {
+            do_normalize_permissions(&disk_path)?;
+        }
         let hashing_start = Instant::now();
         let digest = FileDigest::from_file(&disk_path, digest_config);
         let hashing_info = HashingInfo::new(Instant::now() - hashing_start, 1);

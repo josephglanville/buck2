@@ -26,6 +26,7 @@ pub mod paths_with_digest;
 pub mod prepared;
 pub mod request;
 pub mod result;
+mod sealed_output;
 pub mod target;
 pub mod testing_dry_run;
 

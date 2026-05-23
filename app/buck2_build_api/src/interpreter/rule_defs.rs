@@ -24,6 +24,7 @@ pub mod provider;
 pub mod required_test_local_resource;
 pub mod resolve_query_macro;
 pub mod resolved_macro;
+pub mod store_path;
 pub mod transitive_set;
 pub mod validation_spec;
 

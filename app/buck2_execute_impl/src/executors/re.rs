@@ -72,6 +72,13 @@ pub enum RemoteExecutorError {
     #[error("Trying to execute a `local_only = True` action on remote executor")]
     #[buck2(input)]
     LocalOnlyAction,
+
+    #[cfg(not(fbcode_build))]
+    #[error(
+        "OSS remote execution does not support absolute BuckPkgs store mounts for declared store inputs"
+    )]
+    #[buck2(input)]
+    StoreInputClosureMountsUnsupported,
 }
 
 pub struct ReExecutor {
@@ -399,6 +406,14 @@ impl PreparedCommandExecutor for ReExecutor {
             return ControlFlow::Break(
                 manager.error("remote_prepare", RemoteExecutorError::LocalOnlyAction),
             )?;
+        }
+
+        #[cfg(not(fbcode_build))]
+        if !command.request.paths().store_input_closure().is_empty() {
+            return ControlFlow::Break(manager.error(
+                "remote_prepare",
+                RemoteExecutorError::StoreInputClosureMountsUnsupported,
+            ))?;
         }
 
         let identity =

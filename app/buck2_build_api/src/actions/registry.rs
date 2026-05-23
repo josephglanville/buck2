@@ -52,6 +52,8 @@ use crate::actions::UnregisteredAction;
 use crate::analysis::registry::AnalysisValueFetcher;
 use crate::deferred::calculation::ActionLookup;
 
+mod store_output;
+
 /// The actions registry for a particular analysis of a rule, dynamic actions, anon target, BXL.
 #[derive(Allocative, Trace)]
 pub struct ActionsRegistry<'v> {

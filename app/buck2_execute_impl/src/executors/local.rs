@@ -732,7 +732,12 @@ impl LocalExecutor {
             suspend_count: None,
         });
 
-        let result = match status {
+        let failed_local_scratch_path = scratch_path
+            .0
+            .as_ref()
+            .map(|path| self.artifact_fs.fs().resolve(path).to_string());
+
+        let mut result = match status {
             GatherOutputStatus::Finished {
                 exit_code,
                 execution_stats,
@@ -871,6 +876,10 @@ impl LocalExecutor {
             GatherOutputStatus::Cancelled => manager.cancel_claim(execution_kind, *timing),
         };
 
+        if !result.was_success() {
+            result.report.failed_local_scratch_path = failed_local_scratch_path;
+        }
+
         if let Some(run_action_key) = request.run_action_key()
             && !request.outputs_cleanup
         {
@@ -907,11 +916,13 @@ impl LocalExecutor {
                 )?
                 .into_path();
             let abspath = self.root.join(&path);
+            let normalize_permissions = output.logical_store_path().is_none();
             let (entry, hashing_info) = build_entry_from_disk(
                 abspath,
                 FileDigestConfig::build(digest_config.cas_digest_config()),
                 self.blocking_executor.as_ref(),
                 self.artifact_fs.fs().root(),
+                normalize_permissions,
             )
             .await
             .with_buck_error_context(|| format!("collecting output {path:?}"))?;
@@ -932,7 +943,7 @@ impl LocalExecutor {
             let value = extract_artifact_value(&builder, &output_path, digest_config)?;
             if let Some(value) = value {
                 match output {
-                    CommandExecutionOutput::BuildArtifact { .. } => {
+                    CommandExecutionOutput::BuildArtifact { ref path, .. } => {
                         // For content-based paths, things are a bit complicated here, because (a) the action
                         // wrote outputs at "placeholder" paths, not the final content-based paths (because
                         // they are not know until the output is produced), and (b) other actions can declare
@@ -974,6 +985,7 @@ impl LocalExecutor {
                                 path: output_path.clone(),
                                 artifact: value.dupe(),
                                 configuration_path: None,
+                                logical_store_path: path.logical_store_path().map(str::to_owned),
                             });
                             configuration_path_to_content_based_path_symlinks
                                 .push((configuration_hash_path, symlink_value));
@@ -993,6 +1005,7 @@ impl LocalExecutor {
                                 path: output_path,
                                 artifact: value.dupe(),
                                 configuration_path: None,
+                                logical_store_path: path.logical_store_path().map(str::to_owned),
                             });
                         }
                     }

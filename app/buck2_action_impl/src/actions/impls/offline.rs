@@ -62,6 +62,7 @@ pub(crate) async fn declare_copy_from_offline_cache(
             FileDigestConfig::build(ctx.digest_config().cas_digest_config()),
             ctx.blocking_executor(),
             ctx.fs().fs().root(),
+            true,
         )
         .await?;
 

@@ -9,6 +9,8 @@
  */
 
 use buck2_artifact::actions::key::ActionIndex;
+use buck2_artifact::actions::key::ActionKey;
+use buck2_artifact::artifact::artifact_type::Artifact;
 use buck2_artifact::artifact::artifact_type::testing::ArtifactTestingExt;
 use buck2_artifact::artifact::artifact_type::testing::BuildArtifactTestingExt;
 use buck2_artifact::artifact::build_artifact::BuildArtifact;
@@ -16,8 +18,12 @@ use buck2_build_api::actions::ActionErrors;
 use buck2_build_api::actions::registry::ActionsRegistry;
 use buck2_build_api::analysis::registry::AnalysisValueFetcher;
 use buck2_build_api::artifact_groups::ArtifactGroup;
+use buck2_build_api::artifact_groups::ArtifactGroupValues;
 use buck2_core::category::Category;
 use buck2_core::category::CategoryRef;
+use buck2_core::cells::CellResolver;
+use buck2_core::cells::cell_root_path::CellRootPathBuf;
+use buck2_core::cells::name::CellName;
 use buck2_core::configuration::data::ConfigurationData;
 use buck2_core::configuration::pair::ConfigurationNoExec;
 use buck2_core::deferred::base_deferred_key::BaseDeferredKey;
@@ -26,8 +32,15 @@ use buck2_core::execution_types::execution::ExecutionPlatform;
 use buck2_core::execution_types::execution::ExecutionPlatformResolution;
 use buck2_core::execution_types::executor_config::CommandExecutorConfig;
 use buck2_core::fs::buck_out_path::BuckOutPathKind;
+use buck2_core::fs::buck_out_path::BuckOutPathResolver;
 use buck2_core::fs::buck_out_path::BuildArtifactPath;
+use buck2_core::fs::project::ProjectRootTemp;
+use buck2_core::fs::project_rel_path::ProjectRelativePathBuf;
 use buck2_core::target::configured_target_label::ConfiguredTargetLabel;
+use buck2_execute::artifact_value::ArtifactValue;
+use buck2_execute::digest_config::DigestConfig;
+use buck2_execute::execute::request::CommandExecutionInput;
+use buck2_execute::execute::request::CommandExecutionPaths;
 use buck2_execute::execute::request::OutputType;
 use buck2_fs::paths::forward_rel_path::ForwardRelativePathBuf;
 use buck2_hash::buck_indexset;
@@ -36,6 +49,55 @@ use itertools::Itertools;
 use starlark::values::Heap;
 
 use crate::actions::testings::SimpleUnregisteredAction;
+
+#[test]
+fn command_execution_paths_collect_store_inputs() -> buck2_error::Result<()> {
+    let project_root = ProjectRootTemp::new()?;
+    let fs = buck2_core::fs::artifact_path_resolver::ArtifactFs::new(
+        CellResolver::testing_with_name_and_path(
+            CellName::testing_new("cell"),
+            CellRootPathBuf::new(ProjectRelativePathBuf::unchecked_new("cell_path".into())),
+        ),
+        BuckOutPathResolver::new(ProjectRelativePathBuf::unchecked_new("buck_out".into())),
+        project_root.path().dupe(),
+    );
+
+    let target =
+        ConfiguredTargetLabel::testing_parse("cell//pkg:store", ConfigurationData::testing_new());
+    let owner = DeferredHolderKey::Base(BaseDeferredKey::TargetLabel(target.dupe()));
+    let artifact = BuildArtifact::new(
+        BuildArtifactPath::with_store_path(
+            owner.dupe(),
+            ForwardRelativePathBuf::unchecked_new("__buckpkgs_store__/bash".into()),
+            BuckOutPathKind::default(),
+            "/pkgs/store/bash".to_owned(),
+        ),
+        ActionKey::new(owner, ActionIndex::new(0)),
+        OutputType::File,
+    )?;
+    let value = ArtifactValue::file(DigestConfig::testing_default().empty_file());
+    let group = ArtifactGroupValues::from_artifact(Artifact::from(artifact), value);
+
+    let paths = CommandExecutionPaths::new(
+        vec![CommandExecutionInput::Artifact(Box::new(group))],
+        buck_indexset![],
+        &fs,
+        DigestConfig::testing_default(),
+        None,
+    )?;
+
+    assert_eq!(paths.store_input_closure().len(), 1);
+    let entry = &paths.store_input_closure()[0];
+    assert_eq!(entry.logical_path, "/pkgs/store/bash");
+    assert!(
+        entry
+            .staged_path
+            .as_str()
+            .ends_with("/__buckpkgs_store__/bash")
+    );
+
+    Ok(())
+}
 
 #[test]
 fn declaring_artifacts() -> buck2_error::Result<()> {

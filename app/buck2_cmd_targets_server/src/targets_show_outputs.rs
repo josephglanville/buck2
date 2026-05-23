@@ -20,6 +20,7 @@ use buck2_cli_proto::targets_show_outputs_response::TargetPaths;
 use buck2_common::pattern::parse_from_cli::parse_patterns_from_cli_args;
 use buck2_common::pattern::resolve::ResolveTargetPatterns;
 use buck2_common::pattern::resolve::ResolvedPattern;
+use buck2_core::fs::artifact_path_resolver::ArtifactFs;
 use buck2_core::global_cfg_options::GlobalCfgOptions;
 use buck2_core::package::PackageLabel;
 use buck2_core::pattern::pattern::PackageSpec;
@@ -118,8 +119,7 @@ async fn targets_show_outputs(
     {
         let mut paths = Vec::new();
         for artifact in targets_artifacts.artifacts {
-            let path = artifact.resolve_configuration_hash_path(&artifact_fs)?;
-            paths.push(path.to_string());
+            paths.push(target_output_display_path(&artifact, &artifact_fs)?);
         }
         targets_paths.push(TargetPaths {
             target: targets_artifacts.providers_label.unconfigured().to_string(),
@@ -128,6 +128,19 @@ async fn targets_show_outputs(
     }
 
     Ok(TargetsShowOutputsResponse { targets_paths })
+}
+
+fn target_output_display_path(
+    artifact: &Artifact,
+    artifact_fs: &ArtifactFs,
+) -> buck2_error::Result<String> {
+    if let Some(store_path) = artifact.get_path().logical_store_path() {
+        Ok(store_path)
+    } else {
+        Ok(artifact
+            .resolve_configuration_hash_path(artifact_fs)?
+            .to_string())
+    }
 }
 
 async fn retrieve_targets_artifacts_from_patterns(

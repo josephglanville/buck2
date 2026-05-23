@@ -98,6 +98,8 @@ use crate::interpreter::rule_defs::transitive_set::FrozenTransitiveSet;
 use crate::interpreter::rule_defs::transitive_set::FrozenTransitiveSetDefinition;
 use crate::interpreter::rule_defs::transitive_set::TransitiveSet;
 
+mod store_output;
+
 #[derive(Derivative, Trace, Allocative)]
 #[derivative(Debug)]
 pub struct AnalysisRegistry<'v> {

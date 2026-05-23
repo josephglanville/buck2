@@ -8,6 +8,7 @@
  * above-listed licenses.
  */
 
+use std::hash::Hasher;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,6 +28,7 @@ use buck2_data::NetworkAccess;
 use buck2_directory::directory::fingerprinted_directory::FingerprintedDirectory;
 use buck2_error::BuckErrorContext;
 use buck2_error::buck2_error;
+use buck2_util::strong_hasher::Blake3StrongHasher;
 use dice_futures::cancellation::CancellationContext;
 use dupe::Dupe;
 use remote_execution as RE;
@@ -52,6 +54,7 @@ use crate::execute::request::CommandExecutionRequest;
 use crate::execute::request::ExecutorPreference;
 use crate::execute::request::OutputType;
 use crate::execute::request::RemoteWorkerSpec;
+use crate::execute::request::StoreInputClosureEntry;
 use crate::execute::result::CommandExecutionMetadata;
 use crate::execute::result::CommandExecutionResult;
 
@@ -178,10 +181,17 @@ impl CommandExecutor {
         prepared_command: &PreparedCommand<'_, '_>,
         cancellations: &CancellationContext,
     ) -> CommandExecutionResult {
-        self.0
+        let mut result = self
+            .0
             .inner
             .exec_cmd(prepared_command, manager, cancellations)
-            .await
+            .await;
+        result.report.store_input_closure = prepared_command
+            .request
+            .paths()
+            .store_input_closure()
+            .to_vec();
+        result
     }
 
     pub fn is_local_execution_possible(&self, executor_preference: ExecutorPreference) -> bool {
@@ -257,6 +267,7 @@ impl CommandExecutor {
                 &request
                     .meta_internal_extra_params()
                     .remote_execution_caf_fbpkgs,
+                request.paths().store_input_closure(),
                 request.remote_worker(),
                 re_outputs_required,
                 request
@@ -287,6 +298,7 @@ fn re_create_action(
     re_gang_workers: &Vec<ReGangWorker>,
     remote_execution_custom_image: &Option<RemoteExecutorCustomImage>,
     remote_execution_caf_fbpkgs: &[RemoteExecutorCafFbpkg],
+    store_input_closure: &[StoreInputClosureEntry],
     worker: &Option<RemoteWorkerSpec>,
     re_outputs_required: bool,
     allow_unsandboxed_action_cache_uploads: bool,
@@ -319,6 +331,7 @@ fn re_create_action(
                 .transpose()
                 .buck_error_context("Cannot convert timeout to GRPC")?,
             do_not_cache,
+            salt: store_input_closure_salt(worker.input_paths.store_input_closure()),
             ..Default::default()
         };
         #[cfg(fbcode_build)]
@@ -402,6 +415,7 @@ fn re_create_action(
             .transpose()
             .buck_error_context("Cannot convert timeout to GRPC")?,
         do_not_cache,
+        salt: store_input_closure_salt(store_input_closure),
         #[cfg(fbcode_build)]
         allow_unsandboxed_action_cache_uploads,
         #[cfg(fbcode_build)]
@@ -490,6 +504,22 @@ fn re_create_action(
     })
 }
 
+fn store_input_closure_salt(entries: &[StoreInputClosureEntry]) -> Vec<u8> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    let mut hasher = Blake3StrongHasher::new();
+    hasher.write(b"buck2-store-input-closure-v1\0");
+    for entry in entries {
+        hasher.write(entry.logical_path.as_bytes());
+        hasher.write(&[0]);
+        hasher.write(entry.staged_path.as_str().as_bytes());
+        hasher.write(&[0]);
+    }
+    hasher.finalize().as_bytes().to_vec()
+}
+
 #[cfg(fbcode_build)]
 fn set_action_network_access(
     action: &mut RE::Action,
@@ -507,4 +537,37 @@ fn set_action_network_access(
         ExecutorNetworkAccess::Loopback => RE::NetworkIsolationType::Loopback,
         ExecutorNetworkAccess::Private => RE::NetworkIsolationType::Private,
     } as i32;
+}
+
+#[cfg(test)]
+mod tests {
+    use buck2_core::fs::project_rel_path::ProjectRelativePathBuf;
+
+    use super::*;
+
+    fn entry(logical_path: &str, staged_path: &str) -> StoreInputClosureEntry {
+        StoreInputClosureEntry {
+            logical_path: logical_path.to_owned(),
+            staged_path: ProjectRelativePathBuf::unchecked_new(staged_path.to_owned()),
+        }
+    }
+
+    #[test]
+    fn store_input_closure_salt_tracks_logical_mounts() {
+        assert_eq!(store_input_closure_salt(&[]), Vec::<u8>::new());
+
+        let bash = [entry(
+            "/pkgs/store/bash",
+            "buck-out/v2/gen/pkg/__buckpkgs_store__/bash",
+        )];
+        let coreutils = [entry(
+            "/pkgs/store/coreutils",
+            "buck-out/v2/gen/pkg/__buckpkgs_store__/bash",
+        )];
+
+        assert_ne!(
+            store_input_closure_salt(&bash),
+            store_input_closure_salt(&coreutils)
+        );
+    }
 }

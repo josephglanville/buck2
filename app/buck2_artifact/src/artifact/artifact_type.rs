@@ -261,6 +261,10 @@ impl ArtifactDyn for Artifact {
     fn is_projected(&self) -> bool {
         !self.as_parts().1.is_empty()
     }
+
+    fn logical_store_path(&self) -> Option<String> {
+        self.get_path().logical_store_path()
+    }
 }
 
 #[derive(
