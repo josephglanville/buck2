@@ -15,16 +15,21 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       buck2_version: ${{ steps.define_version_info.outputs.buck2_version }}
+      release_timestamp: ${{ steps.define_version_info.outputs.release_timestamp }}
     steps:
+      - uses: actions/checkout@v6
       - name: Define version info
         id: define_version_info
         run: |
-          # Specify the release version information
-          commit_date=$(echo "${{ github.event.repository.updated_at }}" | sed 's/T.*//')
+          commit_date=$(git show --no-patch --format=%cs "$GITHUB_SHA")
+          commit_timestamp=$(git show --no-patch --format=%cI "$GITHUB_SHA")
 
           echo "buck2_version=$commit_date-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "release_timestamp=$commit_timestamp" >> "$GITHUB_OUTPUT"
       - name: Display version info
-        run: echo ${{ steps.define_version_info.outputs.buck2_version }}
+        run: |
+          echo ${{ steps.define_version_info.outputs.buck2_version }}
+          echo ${{ steps.define_version_info.outputs.release_timestamp }}
 
   get_prelude_hash:
     name: Get the latest prelude hash
@@ -124,7 +129,7 @@ jobs:
         env:
           # BUCK2 prefixed variables used within the build to stamp in a version information
           # BUCK2_SET_EXPLICIT_VERSION will populate the buck2 --version string
-          BUCK2_RELEASE_TIMESTAMP: ${{ github.event.repository.updated_at }}
+          BUCK2_RELEASE_TIMESTAMP: ${{ needs.set_version_info.outputs.release_timestamp }}
           BUCK2_SET_EXPLICIT_VERSION: ${{ needs.set_version_info.outputs.buck2_version }}
           RUSTFLAGS: "--cfg tokio_unstable -C strip=debuginfo -C codegen-units=1"
         run: |
