@@ -135,6 +135,12 @@ pub const OUTPUT_DIR: &str = "output_dir";
 /// the template name for buck to fill with the commands outputs
 pub const OUTPUTS_TEMPLATE: &str = "outputs";
 
+/// Environment variable containing a durable directory for test-created artifacts.
+pub const TEST_UNDECLARED_OUTPUTS_DIR_ENV: &str = "TEST_UNDECLARED_OUTPUTS_DIR";
+
+/// Declared output name backing [`TEST_UNDECLARED_OUTPUTS_DIR_ENV`].
+pub const TEST_UNDECLARED_OUTPUTS_DIR_NAME: &str = "test.outputs";
+
 /// the template name for buck to fill with the run cmd based on the test's run information
 /// this should be multi-arity
 pub const TEST_RUN_CMD: &str = "test_run_cmd";

@@ -8,9 +8,40 @@
 
 # pyre-strict
 
+from pathlib import Path
+
 from buck2.tests.e2e_util.api.buck import Buck
+from buck2.tests.e2e_util.asserts import expect_failure
 from buck2.tests.e2e_util.buck_workspace import buck_test
 from buck2.tests.e2e_util.helper.utils import random_string, read_what_ran
+
+
+def _test_output_directory(stderr: str) -> Path:
+    prefix = "Test output directory for "
+    output_lines = [
+        line.rsplit(": ", 1)[1]
+        for line in stderr.splitlines()
+        if line.startswith(prefix)
+    ]
+
+    assert len(output_lines) == 1, stderr
+    output_dir = Path(output_lines[0])
+    assert output_dir.name == "test.outputs"
+    return output_dir
+
+
+@buck_test()
+async def test_undeclared_test_outputs_are_materialized(buck: Buck) -> None:
+    result = await buck.test("//:outputs_test")
+    output_dir = _test_output_directory(result.stderr)
+    assert (output_dir / "artifact.txt").read_text() == "captured test output\n"
+
+
+@buck_test()
+async def test_undeclared_test_outputs_survive_failure(buck: Buck) -> None:
+    result = await expect_failure(buck.test("//:failing_outputs_test"))
+    output_dir = _test_output_directory(result.stderr)
+    assert (output_dir / "artifact.txt").read_text() == "captured test output\n"
 
 
 @buck_test()

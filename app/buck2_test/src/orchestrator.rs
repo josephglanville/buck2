@@ -92,6 +92,7 @@ use buck2_execute::artifact::fs::ExecutorFs;
 use buck2_execute::artifact_value::ArtifactValue;
 use buck2_execute::digest_config::DigestConfig;
 use buck2_execute::digest_config::HasDigestConfig;
+use buck2_execute::directory::ActionDirectoryEntry;
 use buck2_execute::execute::blocking::HasBlockingExecutor;
 use buck2_execute::execute::cache_uploader::CacheUploadInfo;
 use buck2_execute::execute::cache_uploader::NoOpCacheUploader;
@@ -149,11 +150,14 @@ use buck2_test_api::data::ExecutorConfigOverride;
 use buck2_test_api::data::ExternalRunnerSpecValue;
 use buck2_test_api::data::LocalExecutionCommand;
 use buck2_test_api::data::Output;
+use buck2_test_api::data::OutputName;
 use buck2_test_api::data::PrepareForLocalExecutionResult;
 use buck2_test_api::data::RequiredLocalResources;
 use buck2_test_api::data::TestResult;
 use buck2_test_api::data::TestStage;
 use buck2_test_api::data::convert::host_sharing_requirements_to_grpc;
+use buck2_test_api::protocol::TEST_UNDECLARED_OUTPUTS_DIR_ENV;
+use buck2_test_api::protocol::TEST_UNDECLARED_OUTPUTS_DIR_NAME;
 use buck2_test_api::protocol::TestOrchestrator;
 use derive_more::From;
 use dice::DiceComputations;
@@ -187,6 +191,44 @@ use crate::session::TestSessionOptions;
 use crate::translations;
 
 const MAX_SUFFIX_LEN: usize = 1024;
+
+fn ensure_test_output_directory(
+    stage: &TestStage,
+    env: &mut SortedVectorMap<String, ArgValue>,
+    pre_create_dirs: &mut Vec<DeclaredOutput>,
+) {
+    if !matches!(stage, TestStage::Testing { .. }) {
+        return;
+    }
+
+    let output_name = OutputName::unchecked_new(TEST_UNDECLARED_OUTPUTS_DIR_NAME.to_owned());
+    env.insert(
+        TEST_UNDECLARED_OUTPUTS_DIR_ENV.to_owned(),
+        ArgValue {
+            content: ArgValueContent::DeclaredOutput(output_name.clone()),
+            format: None,
+        },
+    );
+
+    if !pre_create_dirs
+        .iter()
+        .any(|output| output.name == output_name)
+    {
+        pre_create_dirs.push(DeclaredOutput {
+            name: output_name,
+            remote_storage_config: Default::default(),
+        });
+    }
+}
+
+fn is_populated_test_output(output_name: &OutputName, artifact: &ArtifactValue) -> bool {
+    output_name.as_str() == TEST_UNDECLARED_OUTPUTS_DIR_NAME
+        && matches!(
+            artifact.entry(),
+            ActionDirectoryEntry::Dir(directory)
+                if directory.entries().into_iter().next().is_some()
+        )
+}
 
 /// Test info wrapper that works with both `ExternalRunnerTestInfo` and
 /// `InternalRunnerTestInfo`. Provider selection is gated on
@@ -392,6 +434,12 @@ impl<'a> BuckTestOrchestrator<'a> {
         Ok(())
     }
 
+    fn send_info_message(&self, message: String) -> buck2_error::Result<()> {
+        self.results_channel
+            .unbounded_send(Ok(ExecutorMessage::InfoMessage(message)))
+            .map_err(|_| buck2_error::internal_error!("Message received after end-of-tests"))
+    }
+
     /// Exempt static listing from network isolation: its enumeration tool
     /// (gtest-list-tests, coral, ...) is a DotSlash stub that can't resolve under
     /// network isolation. Force `All` so the exemption overrides any
@@ -414,17 +462,20 @@ impl<'a> BuckTestOrchestrator<'a> {
         stage: TestStage,
         test_target: ConfiguredTargetHandle,
         cmd: Vec<ArgValue>,
-        env: SortedVectorMap<String, ArgValue>,
+        mut env: SortedVectorMap<String, ArgValue>,
         timeout: Duration,
         host_sharing_requirements: HostSharingRequirements,
-        pre_create_dirs: Vec<DeclaredOutput>,
+        mut pre_create_dirs: Vec<DeclaredOutput>,
         executor_override: Option<ExecutorConfigOverride>,
         required_local_resources: RequiredLocalResources,
         disable_test_execution_caching: bool,
     ) -> Result<ExecutionResult2, ExecuteError> {
         Self::require_alive(self.liveliness_observer.dupe()).await?;
 
+        ensure_test_output_directory(&stage, &mut env, &mut pre_create_dirs);
+
         let test_target = self.session.get(test_target)?;
+        let test_target_label = test_target.target().unconfigured().to_string();
 
         let fs = self.dice.clone().get_artifact_fs().await?;
         let pre_create_dirs = Arc::new(pre_create_dirs);
@@ -462,12 +513,14 @@ impl<'a> BuckTestOrchestrator<'a> {
 
         let mut output_map = StdBuckHashMap::default();
         let mut paths_to_materialize = vec![];
+        let mut populated_test_output_paths = vec![];
 
         let remote_storage_config_update_futures = FuturesUnordered::new();
 
         for (test_path, artifact) in outputs {
             let project_relative_path = fs.buck_out_path_resolver().resolve_test(&test_path);
             let output_name = test_path.into_path().into();
+            let populated_test_output = is_populated_test_output(&output_name, &artifact);
             // It's OK to search iteratively here because there will be few entries in `pre_create_dirs`
             let remote_storage_config = pre_create_dirs
                 .iter()
@@ -498,6 +551,9 @@ impl<'a> BuckTestOrchestrator<'a> {
                 _ => {
                     paths_to_materialize.push(project_relative_path.clone());
                     let abs_path = fs.fs().resolve(&project_relative_path);
+                    if populated_test_output {
+                        populated_test_output_paths.push(abs_path.to_string());
+                    }
                     output_map.insert(output_name, Output::LocalPath(abs_path));
                 }
             };
@@ -515,6 +571,12 @@ impl<'a> BuckTestOrchestrator<'a> {
             .ensure_materialized(paths_to_materialize)
             .await
             .buck_error_context("Error materializing test outputs")?;
+
+        for path in populated_test_output_paths {
+            self.send_info_message(format!(
+                "Test output directory for {test_target_label}: {path}"
+            ))?;
+        }
 
         Ok(ExecutionResult2 {
             status,
@@ -976,10 +1038,12 @@ impl TestOrchestrator for BuckTestOrchestrator<'_> {
         stage: TestStage,
         test_target: ConfiguredTargetHandle,
         cmd: Vec<ArgValue>,
-        env: SortedVectorMap<String, ArgValue>,
-        pre_create_dirs: Vec<DeclaredOutput>,
+        mut env: SortedVectorMap<String, ArgValue>,
+        mut pre_create_dirs: Vec<DeclaredOutput>,
         required_local_resources: RequiredLocalResources,
     ) -> buck2_error::Result<PrepareForLocalExecutionResult> {
+        ensure_test_output_directory(&stage, &mut env, &mut pre_create_dirs);
+
         let test_target = self.session.get(test_target)?;
 
         let fs = self.dice.clone().get_artifact_fs().await?;
@@ -1133,10 +1197,7 @@ impl TestOrchestrator for BuckTestOrchestrator<'_> {
     }
 
     async fn attach_info_message(&self, message: String) -> buck2_error::Result<()> {
-        self.results_channel
-            .unbounded_send(Ok(ExecutorMessage::InfoMessage(message)))
-            .map_err(|_| buck2_error::internal_error!("Message received after end-of-tests"))?;
-        Ok(())
+        self.send_info_message(message)
     }
 
     async fn upload_to_cas(
@@ -2562,6 +2623,7 @@ mod tests {
     use buck2_core::configuration::data::ConfigurationData;
     use buck2_core::fs::project::ProjectRootTemp;
     use buck2_execute::re::manager::UnconfiguredRemoteExecutionClient;
+    use buck2_test_api::data::RemoteStorageConfig;
     use buck2_test_api::data::TestStage;
     use buck2_test_api::data::TestStatus;
     use dice::UserComputationData;
@@ -2572,6 +2634,83 @@ mod tests {
     use futures::stream::TryStreamExt;
 
     use super::*;
+
+    fn testing_stage() -> TestStage {
+        TestStage::Testing {
+            suite: "test_suite".to_owned(),
+            testcases: vec!["test".to_owned()],
+            variant: None,
+            repeat_count: None,
+        }
+    }
+
+    #[test]
+    fn test_ensure_test_output_directory_for_testing() {
+        let mut env = SortedVectorMap::new();
+        let mut pre_create_dirs = Vec::new();
+
+        ensure_test_output_directory(&testing_stage(), &mut env, &mut pre_create_dirs);
+
+        let value = env
+            .get(TEST_UNDECLARED_OUTPUTS_DIR_ENV)
+            .expect("test output environment variable should be present");
+        assert_eq!(
+            value.content,
+            ArgValueContent::DeclaredOutput(OutputName::unchecked_new(
+                TEST_UNDECLARED_OUTPUTS_DIR_NAME.to_owned()
+            ))
+        );
+        assert_eq!(
+            pre_create_dirs,
+            vec![DeclaredOutput::unchecked_new(
+                TEST_UNDECLARED_OUTPUTS_DIR_NAME.to_owned(),
+                RemoteStorageConfig::default(),
+            )]
+        );
+    }
+
+    #[test]
+    fn test_ensure_test_output_directory_skips_listing() {
+        let mut env = SortedVectorMap::new();
+        let mut pre_create_dirs = Vec::new();
+        let stage = TestStage::Listing {
+            suite: "test_suite".to_owned(),
+            cacheable: true,
+        };
+
+        ensure_test_output_directory(&stage, &mut env, &mut pre_create_dirs);
+
+        assert!(env.is_empty());
+        assert!(pre_create_dirs.is_empty());
+    }
+
+    #[test]
+    fn test_ensure_test_output_directory_reuses_declared_output() {
+        let existing_output = DeclaredOutput::unchecked_new(
+            TEST_UNDECLARED_OUTPUTS_DIR_NAME.to_owned(),
+            RemoteStorageConfig::new(true),
+        );
+        let mut env = SortedVectorMap::new();
+        env.insert(
+            TEST_UNDECLARED_OUTPUTS_DIR_ENV.to_owned(),
+            ArgValue {
+                content: ArgValueContent::ExternalRunnerSpecValue(
+                    ExternalRunnerSpecValue::Verbatim("not-an-output".to_owned()),
+                ),
+                format: None,
+            },
+        );
+        let mut pre_create_dirs = vec![existing_output.clone()];
+
+        ensure_test_output_directory(&testing_stage(), &mut env, &mut pre_create_dirs);
+
+        assert_eq!(pre_create_dirs, vec![existing_output]);
+        assert!(matches!(
+            &env[TEST_UNDECLARED_OUTPUTS_DIR_ENV].content,
+            ArgValueContent::DeclaredOutput(output)
+                if output.as_str() == TEST_UNDECLARED_OUTPUTS_DIR_NAME
+        ));
+    }
 
     async fn make() -> buck2_error::Result<(
         BuckTestOrchestrator<'static>,

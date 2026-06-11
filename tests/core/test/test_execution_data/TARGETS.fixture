@@ -3,6 +3,17 @@ load(":rules.bzl", "simple_test")
 simple_test(name = "test")
 
 simple_test(
+    name = "outputs_test",
+    write_test_output = True,
+)
+
+simple_test(
+    name = "failing_outputs_test",
+    exit_code = 1,
+    write_test_output = True,
+)
+
+simple_test(
     name = "cacheable_test",
     seed = read_config("test", "seed", ""),
     supports_test_execution_caching = True,
