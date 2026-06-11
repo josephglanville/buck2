@@ -52,6 +52,13 @@ impl Materializer for NoDiskMaterializer {
         Ok(())
     }
 
+    async fn declare_imported_store(
+        &self,
+        _artifact: DeclareArtifactPayload,
+    ) -> buck2_error::Result<()> {
+        Ok(())
+    }
+
     async fn declare_copy_impl(
         &self,
         _path: ProjectRelativePathBuf,

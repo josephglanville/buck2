@@ -142,6 +142,8 @@ pub struct DeclareArtifactPayload {
     pub artifact: ArtifactValue,
     /// For content-based artifacts, the configuration-based path used for eager materialization lookups.
     pub configuration_path: Option<ProjectRelativePathBuf>,
+    /// Logical absolute BuckPkgs store path associated with this staged artifact, if any.
+    pub logical_store_path: Option<String>,
 }
 
 /// A trait providing methods to asynchronously materialize artifacts.
@@ -178,6 +180,14 @@ pub trait Materializer: Allocative + Send + Sync + 'static {
     async fn declare_existing(
         &self,
         artifacts: Vec<DeclareArtifactPayload>,
+    ) -> buck2_error::Result<()>;
+
+    /// Declare a BuckPkgs store artifact whose bytes were already verified at
+    /// its logical store path. The staged path is an identity key only and is
+    /// not required to exist on disk.
+    async fn declare_imported_store(
+        &self,
+        artifact: DeclareArtifactPayload,
     ) -> buck2_error::Result<()>;
 
     async fn declare_copy_impl(

@@ -345,6 +345,7 @@ impl Action for CasArtifactAction {
                     path,
                     artifact: value.dupe(),
                     configuration_path,
+                    logical_store_path: None,
                 }],
             )
             .await?;

@@ -31,6 +31,7 @@ use buck2_execute::execute::prepared::PreparedCommand;
 use buck2_execute::execute::prepared::PreparedCommandExecutor;
 use buck2_execute::execute::request::CommandExecutionPaths;
 use buck2_execute::execute::request::ExecutorPreference;
+use buck2_execute::execute::request::StoreInputClosureEntry;
 use buck2_execute::execute::result::CommandExecutionErrorType;
 use buck2_execute::execute::result::CommandExecutionResult;
 use buck2_execute::execute::result::CommandExecutionStatus;
@@ -104,6 +105,21 @@ where
     /// Indicate whether an action is too big to run on RE.
     fn is_action_too_large_for_remote(&self, paths: &CommandExecutionPaths) -> bool {
         paths.input_files_bytes() > self.re_max_input_files_bytes
+    }
+}
+
+fn declared_store_inputs_require_local_execution(
+    store_input_closure: &[StoreInputClosureEntry],
+) -> bool {
+    #[cfg(fbcode_build)]
+    {
+        let _unused = store_input_closure;
+        false
+    }
+
+    #[cfg(not(fbcode_build))]
+    {
+        !store_input_closure.is_empty()
     }
 }
 
@@ -191,7 +207,10 @@ where
         let remote_result = self.remote_exec_cmd(command, remote_manager, cancellations);
 
         let action_too_large = self.is_action_too_large_for_remote(command.request.paths());
-        if executor_preference.requires_local() || action_too_large {
+        let store_inputs_require_local = declared_store_inputs_require_local_execution(
+            command.request.paths().store_input_closure(),
+        );
+        if executor_preference.requires_local() || action_too_large || store_inputs_require_local {
             let mut res = local_result.await;
             if action_too_large {
                 res.scheduling_mode = Some(SchedulingMode::LocalActionTooLarge);
@@ -596,5 +615,23 @@ impl FallbackTracker {
         }
 
         true
+    }
+}
+
+#[cfg(all(test, not(fbcode_build)))]
+mod tests {
+    use buck2_core::fs::project_rel_path::ProjectRelativePathBuf;
+
+    use super::*;
+
+    #[test]
+    fn declared_store_inputs_require_local_execution_in_oss() {
+        let entry = StoreInputClosureEntry {
+            logical_path: "/pkgs/store/example".to_owned(),
+            staged_path: ProjectRelativePathBuf::unchecked_new("buck-out/v2/example".to_owned()),
+        };
+
+        assert!(declared_store_inputs_require_local_execution(&[entry]));
+        assert!(!declared_store_inputs_require_local_execution(&[]));
     }
 }

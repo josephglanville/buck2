@@ -180,6 +180,8 @@ impl WhatRanEntry {
         output: &mut impl WhatRanOutputWriter,
         options: &WhatRanCommandOptions,
         std_err: Option<&str>,
+        store_input_closure: &[buck2_data::StoreInputClosureEntry],
+        failed_local_scratch_path: Option<&str>,
         duration: Option<std::time::Duration>,
         scheduling_mode: Option<SchedulingMode>,
     ) -> Result<(), ClientIoError> {
@@ -192,6 +194,8 @@ impl WhatRanEntry {
                 output,
                 &options_regex,
                 std_err,
+                store_input_closure,
+                failed_local_scratch_path,
                 duration,
                 scheduling_mode,
             )?;
@@ -240,7 +244,7 @@ impl WhatRanCommandState {
     ) -> buck2_error::Result<()> {
         for (_, entry) in self.known_actions.into_iter() {
             if should_emit_unfinished_action(options) {
-                entry.emit_what_ran_entry(output, options, None, None, None)?;
+                entry.emit_what_ran_entry(output, options, None, &[], None, None, None)?;
             }
         }
         Ok(())
@@ -287,13 +291,33 @@ impl WhatRanCommandState {
                 && should_emit_finished_action(&span.data, options)
             {
                 // Get extra data out of SpanEnd event
-                let (execution_kind, std_err, duration, scheduling_mode) =
+                let (
+                    execution_kind,
+                    std_err,
+                    store_input_closure,
+                    failed_local_scratch_path,
+                    duration,
+                    scheduling_mode,
+                ) =
                     match &span.data {
                         Some(buck2_data::span_end_event::Data::ActionExecution(action_exec)) => (
                             Some(action_exec.execution_kind),
                             action_exec.commands.iter().last().and_then(|cmd| {
                                 cmd.details.as_ref().map(|d| d.cmd_stderr.as_ref())
                             }),
+                            action_exec
+                                .commands
+                                .iter()
+                                .last()
+                                .and_then(|cmd| cmd.details.as_ref())
+                                .map(|details| details.store_input_closure.as_slice())
+                                .unwrap_or_default(),
+                            action_exec
+                                .commands
+                                .iter()
+                                .last()
+                                .and_then(|cmd| cmd.details.as_ref())
+                                .and_then(|details| details.failed_local_scratch_path.as_deref()),
                             action_exec.wall_time.as_ref().map(
                                 |prost_types::Duration { seconds, nanos }| {
                                     std::time::Duration::new(*seconds as u64, *nanos as u32)
@@ -304,7 +328,14 @@ impl WhatRanCommandState {
                                 .as_ref()
                                 .and_then(|o| SchedulingMode::try_from(*o).ok()),
                         ),
-                        _ => (None, None, None, None),
+                        _ => (
+                            None,
+                            None,
+                            &[] as &[buck2_data::StoreInputClosureEntry],
+                            None,
+                            None,
+                            None,
+                        ),
                     };
 
                 if execution_kind == Some(buck2_data::ActionExecutionKind::LocalDepFile as i32) {
@@ -313,7 +344,15 @@ impl WhatRanCommandState {
                         .push(CommandReproducer::LocalDepFileCacheHit);
                 }
 
-                entry.emit_what_ran_entry(output, options, std_err, duration, scheduling_mode)?;
+                entry.emit_what_ran_entry(
+                    output,
+                    options,
+                    std_err,
+                    store_input_closure,
+                    failed_local_scratch_path,
+                    duration,
+                    scheduling_mode,
+                )?;
             }
         }
 
@@ -367,6 +406,18 @@ impl WhatRanOutputWriter for OutputFormatWithWriter<'_> {
             LogCommandOutputFormatWithWriter::Readable(w)
             | LogCommandOutputFormatWithWriter::Tabulated(w) => {
                 w.write_all(format!("{}\n", command.as_tabulated_reproducer()).as_bytes())?;
+                for entry in command.store_input_closure {
+                    w.write_all(
+                        format!(
+                            "store_input\t{}\t{}\n",
+                            entry.logical_path, entry.staged_path
+                        )
+                        .as_bytes(),
+                    )?;
+                }
+                if let Some(path) = command.failed_local_scratch_path {
+                    w.write_all(format!("scratch_dir\t{path}\n").as_bytes())?;
+                }
                 if let Some(std_err) = std_err_formatted {
                     write!(
                         w,
@@ -466,6 +517,15 @@ impl WhatRanOutputWriter for OutputFormatWithWriter<'_> {
                     duration: command.duration.map(fmt_duration::fmt_duration),
                     extra: command.extra.map(Into::into),
                     std_err,
+                    store_input_closure: command
+                        .store_input_closure
+                        .iter()
+                        .map(|entry| JsonStoreInputClosureEntry {
+                            logical_path: entry.logical_path.as_str(),
+                            staged_path: entry.staged_path.as_str(),
+                        })
+                        .collect(),
+                    failed_local_scratch_path: command.failed_local_scratch_path,
                     scheduling_mode: command.scheduling_mode,
                 };
                 serde_json::to_writer(w.by_ref(), &command)?;
@@ -517,8 +577,18 @@ struct JsonCommand<'a> {
     extra: Option<JsonExtra<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     std_err: Option<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    store_input_closure: Vec<JsonStoreInputClosureEntry<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failed_local_scratch_path: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scheduling_mode: Option<SchedulingMode>,
+}
+
+#[derive(serde::Serialize)]
+struct JsonStoreInputClosureEntry<'a> {
+    logical_path: &'a str,
+    staged_path: &'a str,
 }
 
 mod json_reproducer {
@@ -602,6 +672,8 @@ mod tests {
             duration: Some("1".to_owned()),
             extra: None,
             std_err: None,
+            store_input_closure: Vec::new(),
+            failed_local_scratch_path: None,
             scheduling_mode: None,
         }
     }
@@ -620,6 +692,8 @@ mod tests {
             duration: Some("1".to_owned()),
             extra: None,
             std_err: None,
+            store_input_closure: Vec::new(),
+            failed_local_scratch_path: None,
             scheduling_mode: None,
         }
     }
@@ -676,6 +750,68 @@ mod tests {
       "case"
     ]
   }
+}"#;
+        assert_eq!(expected, serde_json::to_string_pretty(&command)?);
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_what_ran_command_with_store_inputs() -> buck2_error::Result<()> {
+        let mut command = make_base_command();
+        command.store_input_closure = vec![JsonStoreInputClosureEntry {
+            logical_path: "/pkgs/store/example-tool",
+            staged_path: "buck-out/v2/example-tool",
+        }];
+
+        let expected = r#"{
+  "reason": "test.run",
+  "identity": "some/target",
+  "reproducer": {
+    "executor": "Local",
+    "details": {
+      "command": [
+        "some",
+        "command"
+      ],
+      "env": {
+        "KEY": "val"
+      }
+    }
+  },
+  "duration": "1",
+  "store_input_closure": [
+    {
+      "logical_path": "/pkgs/store/example-tool",
+      "staged_path": "buck-out/v2/example-tool"
+    }
+  ]
+}"#;
+        assert_eq!(expected, serde_json::to_string_pretty(&command)?);
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_what_ran_command_with_failed_scratch_path() -> buck2_error::Result<()> {
+        let mut command = make_base_command();
+        command.failed_local_scratch_path = Some("/tmp/buck-scratch");
+
+        let expected = r#"{
+  "reason": "test.run",
+  "identity": "some/target",
+  "reproducer": {
+    "executor": "Local",
+    "details": {
+      "command": [
+        "some",
+        "command"
+      ],
+      "env": {
+        "KEY": "val"
+      }
+    }
+  },
+  "duration": "1",
+  "failed_local_scratch_path": "/tmp/buck-scratch"
 }"#;
         assert_eq!(expected, serde_json::to_string_pretty(&command)?);
         Ok(())

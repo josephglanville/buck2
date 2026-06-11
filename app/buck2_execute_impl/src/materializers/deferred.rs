@@ -323,8 +323,41 @@ impl<T: IoHandler + Allocative> Materializer for DeferredMaterializerAccessor<T>
         &self,
         artifacts: Vec<DeclareArtifactPayload>,
     ) -> buck2_error::Result<()> {
+        for artifact in &artifacts {
+            if let Some(store_path) = artifact.logical_store_path.as_deref() {
+                self.io
+                    .materialize_store_output(
+                        artifact.path.clone(),
+                        store_path,
+                        artifact.artifact.dupe(),
+                        false,
+                    )
+                    .await?;
+            }
+        }
+
         let cmd = MaterializerCommand::DeclareExisting(
             artifacts,
+            current_span(),
+            get_dispatcher_opt().map(|d| d.trace_id().dupe()),
+        );
+        self.command_sender.send(cmd)?;
+        Ok(())
+    }
+
+    async fn declare_imported_store(
+        &self,
+        artifact: DeclareArtifactPayload,
+    ) -> buck2_error::Result<()> {
+        if artifact.logical_store_path.is_none() {
+            return Err(buck2_error::buck2_error!(
+                buck2_error::ErrorTag::Input,
+                "imported store artifact is missing its logical store path"
+            ));
+        }
+
+        let cmd = MaterializerCommand::DeclareExisting(
+            vec![artifact],
             current_span(),
             get_dispatcher_opt().map(|d| d.trace_id().dupe()),
         );
@@ -366,6 +399,7 @@ impl<T: IoHandler + Allocative> Materializer for DeferredMaterializerAccessor<T>
                 path,
                 artifact: value,
                 configuration_path,
+                logical_store_path: None,
             },
             Box::new(ArtifactMaterializationMethod::LocalCopy(srcs_tree, srcs)),
             get_dispatcher(),
@@ -380,15 +414,36 @@ impl<T: IoHandler + Allocative> Materializer for DeferredMaterializerAccessor<T>
         info: Arc<CasDownloadInfo>,
         artifacts: Vec<DeclareArtifactPayload>,
     ) -> buck2_error::Result<()> {
-        for a in artifacts {
+        let store_outputs = artifacts
+            .iter()
+            .filter_map(|artifact| {
+                artifact.logical_store_path.as_ref().map(|store_path| {
+                    (
+                        artifact.path.clone(),
+                        store_path.clone(),
+                        artifact.artifact.dupe(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for artifact in artifacts {
             let cmd = MaterializerCommand::Declare(
-                a,
+                artifact,
                 Box::new(ArtifactMaterializationMethod::CasDownload { info: info.dupe() }),
                 get_dispatcher(),
                 current_span(),
             );
             self.command_sender.send(cmd)?;
         }
+
+        for (staged_path, store_path, artifact) in store_outputs {
+            self.ensure_materialized(vec![staged_path.clone()]).await?;
+            self.io
+                .materialize_store_output(staged_path, &store_path, artifact, true)
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -403,6 +458,7 @@ impl<T: IoHandler + Allocative> Materializer for DeferredMaterializerAccessor<T>
                 path,
                 artifact: ArtifactValue::file(info.metadata.dupe()),
                 configuration_path,
+                logical_store_path: None,
             },
             Box::new(ArtifactMaterializationMethod::HttpDownload { info }),
             get_dispatcher(),
@@ -470,6 +526,7 @@ impl<T: IoHandler + Allocative> Materializer for DeferredMaterializerAccessor<T>
                     path,
                     artifact: value.dupe(),
                     configuration_path: cfg_path,
+                    logical_store_path: None,
                 },
                 Box::new(method),
                 get_dispatcher(),

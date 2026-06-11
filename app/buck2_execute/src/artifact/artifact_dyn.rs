@@ -36,4 +36,7 @@ pub trait ArtifactDyn: Send + Sync + 'static {
     fn has_content_based_path(&self) -> bool;
 
     fn is_projected(&self) -> bool;
+
+    /// Logical BuckPkgs store path for staged store-backed build artifacts.
+    fn logical_store_path(&self) -> Option<String>;
 }

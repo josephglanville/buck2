@@ -61,9 +61,7 @@ pub fn cleanup_path(fs: &ProjectRoot, path: &ProjectRelativePath) -> buck2_error
     let path = fs.resolve(path);
 
     // This will remove the path if it exists.
-    fs_util::remove_all(&path)
-        .categorize_internal()
-        .map_err(tag_environment_error)?;
+    super::sealed_output::remove_output_tree(&path).map_err(tag_environment_error)?;
 
     let mut path: &AbsNormPath = &path;
 

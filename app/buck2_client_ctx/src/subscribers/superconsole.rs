@@ -1575,6 +1575,24 @@ fn lines_for_command_details(
         };
     }
 
+    if !command_failed.store_input_closure.is_empty() {
+        lines.push(Line::from_iter([Span::new_unstyled_lossy(
+            "Declared store inputs:".to_owned(),
+        )]));
+        for entry in &command_failed.store_input_closure {
+            lines.push(Line::from_iter([Span::new_unstyled_lossy(format!(
+                "  {} <= {}",
+                entry.logical_path, entry.staged_path
+            ))]));
+        }
+    }
+
+    if let Some(path) = &command_failed.failed_local_scratch_path {
+        lines.push(Line::from_iter([Span::new_unstyled_lossy(format!(
+            "Retained failed action scratch directory: `{path}`"
+        ))]));
+    }
+
     if !include_output_streams {
         return;
     }

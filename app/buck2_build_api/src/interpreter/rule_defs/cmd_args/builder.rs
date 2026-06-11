@@ -324,6 +324,15 @@ impl<'v, 'a> CommandLineBuilder<'v, 'a> {
     }
 
     pub fn push_artifact(&mut self, artifact: &Artifact) -> buck2_error::Result<()> {
+        if let Some(store_path) = artifact.get_path().logical_store_path() {
+            let store_path = match self.fs.path_separator() {
+                PathSeparatorKind::Unix => store_path,
+                PathSeparatorKind::Windows => store_path.replace('/', "\\"),
+            };
+            self.write_str(store_path);
+            return Ok(());
+        }
+
         self.write_project_path(
             artifact.resolve_path(self.fs.fs(), self.artifact_path_mapping.get(artifact))?,
         )
@@ -508,8 +517,28 @@ pub(crate) fn path_format_absolute<'p>(
 
 #[cfg(test)]
 mod tests {
+    use buck2_artifact::actions::key::ActionIndex;
+    use buck2_artifact::actions::key::ActionKey;
+    use buck2_artifact::artifact::build_artifact::BuildArtifact;
+    use buck2_core::cells::CellResolver;
+    use buck2_core::cells::cell_root_path::CellRootPathBuf;
+    use buck2_core::cells::name::CellName;
+    use buck2_core::configuration::data::ConfigurationData;
+    use buck2_core::deferred::base_deferred_key::BaseDeferredKey;
+    use buck2_core::deferred::key::DeferredHolderKey;
     use buck2_core::execution_types::executor_config::PathSeparatorKind;
+    use buck2_core::fs::artifact_path_resolver::ArtifactFs;
+    use buck2_core::fs::buck_out_path::BuckOutPathKind;
+    use buck2_core::fs::buck_out_path::BuckOutPathResolver;
+    use buck2_core::fs::buck_out_path::BuildArtifactPath;
+    use buck2_core::fs::project::ProjectRoot;
+    use buck2_core::target::configured_target_label::ConfiguredTargetLabel;
+    use buck2_execute::execute::request::OutputType;
     use buck2_fs::paths::RelativePath;
+    use buck2_fs::paths::abs_norm_path::AbsNormPathBuf;
+    use buck2_fs::paths::forward_rel_path::ForwardRelativePathBuf;
+    use buck2_hash::BuckHashMap;
+    use dupe::Dupe;
 
     use super::*;
 
@@ -530,5 +559,47 @@ mod tests {
             path_format(RelativePath::unchecked_new("a/b"), windows),
             "a\\b"
         );
+    }
+
+    #[test]
+    fn store_inputs_render_logically_while_store_outputs_stay_staged() -> buck2_error::Result<()> {
+        let project_fs =
+            ProjectRoot::new(AbsNormPathBuf::try_from(std::env::current_dir().unwrap()).unwrap())
+                .unwrap();
+        let fs = ArtifactFs::new(
+            CellResolver::testing_with_name_and_path(
+                CellName::testing_new("cell"),
+                CellRootPathBuf::new(ProjectRelativePathBuf::unchecked_new("cell_path".into())),
+            ),
+            BuckOutPathResolver::new(ProjectRelativePathBuf::unchecked_new("buck_out".into())),
+            project_fs,
+        );
+        let executor_fs = ExecutorFs::new(&fs, PathSeparatorKind::Unix);
+        let target =
+            ConfiguredTargetLabel::testing_parse("cell//pkg:foo", ConfigurationData::testing_new());
+        let owner = BaseDeferredKey::TargetLabel(target.dupe());
+        let artifact = Artifact::from(BuildArtifact::new(
+            BuildArtifactPath::with_store_path(
+                DeferredHolderKey::Base(owner.dupe()),
+                ForwardRelativePathBuf::try_from("__buckpkgs_store__/abc-bash".to_owned())?,
+                BuckOutPathKind::Configuration,
+                "/pkgs/store/abc-bash".to_owned(),
+            ),
+            ActionKey::new(DeferredHolderKey::Base(owner), ActionIndex::new(0)),
+            OutputType::Directory,
+        )?);
+        let path_mapping: BuckHashMap<&Artifact, ContentBasedPathHash> = BuckHashMap::default();
+
+        let mut input = Vec::<String>::new();
+        CommandLineBuilder::new(&mut input, &path_mapping, &executor_fs)
+            .push_artifact(&artifact)?;
+        let mut output = Vec::<String>::new();
+        CommandLineBuilder::new(&mut output, &path_mapping, &executor_fs)
+            .push_output_artifact(&artifact)?;
+
+        assert_eq!(input, ["/pkgs/store/abc-bash".to_owned()]);
+        assert_ne!(output, ["/pkgs/store/abc-bash".to_owned()]);
+        assert!(output[0].contains("__buckpkgs_store__/abc-bash"));
+        Ok(())
     }
 }

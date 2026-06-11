@@ -889,6 +889,15 @@ pub async fn command_details(
         signed_exit_code,
         metadata: Some(command.timing.to_proto()),
         additional_message: command.additional_message.clone(),
+        store_input_closure: command
+            .store_input_closure
+            .iter()
+            .map(|entry| buck2_data::StoreInputClosureEntry {
+                logical_path: entry.logical_path.clone(),
+                staged_path: entry.staged_path.to_string(),
+            })
+            .collect(),
+        failed_local_scratch_path: command.failed_local_scratch_path.clone(),
     }
 }
 

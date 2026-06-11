@@ -80,6 +80,7 @@ use crate::materializers::deferred::clean_stale::CleanInvalidatedPathRequest;
 use crate::materializers::immediate;
 use crate::materializers::io::MaterializeTreeStructure;
 use crate::materializers::io::materialize_files;
+use crate::materializers::store_output;
 
 #[derive(Allocative)]
 pub struct DefaultIoHandler {
@@ -136,6 +137,14 @@ pub trait IoHandler: Sized + Sync + Send + 'static {
         event_dispatcher: EventDispatcher,
         cancellations: &CancellationContext,
     ) -> Result<(), MaterializeEntryError>;
+
+    async fn materialize_store_output(
+        self: &Arc<Self>,
+        staged_path: ProjectRelativePathBuf,
+        store_path: &str,
+        artifact: ArtifactValue,
+        seal_cas_transport: bool,
+    ) -> buck2_error::Result<()>;
 
     fn create_ttl_refresh(
         self: &Arc<Self>,
@@ -446,6 +455,25 @@ impl IoHandler for DefaultIoHandler {
             })
             .await?;
         Ok(())
+    }
+
+    async fn materialize_store_output(
+        self: &Arc<Self>,
+        staged_path: ProjectRelativePathBuf,
+        store_path: &str,
+        artifact: ArtifactValue,
+        seal_cas_transport: bool,
+    ) -> buck2_error::Result<()> {
+        store_output::materialize_store_output(
+            self.io_executor.as_ref(),
+            &self.fs,
+            self.digest_config,
+            staged_path,
+            store_path,
+            artifact,
+            seal_cas_transport,
+        )
+        .await
     }
 
     fn create_ttl_refresh(

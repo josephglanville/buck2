@@ -491,6 +491,7 @@ impl CasDownloader<'_> {
                         .to_owned(),
                     artifact: value.dupe(),
                     configuration_path,
+                    logical_store_path: requested.logical_store_path(),
                 });
                 mapped_outputs.insert(requested.cloned(), value);
             }
